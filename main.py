@@ -1,8 +1,8 @@
 """
 IntactRetinaToolkit — main.py
 ==============================
-Loads one Intan (.rhs) and one MEA (.edf) recording and prints a summary
-of each. Edit the params below and run:
+Loads one Intan (.rhs) and one MEA (.edf) recording and runs analysis.
+Edit the params below and run:
     python main.py
 """
 
@@ -12,15 +12,21 @@ from dataobj import load_rhs, load_edf
 #  PARAMS
 # ============================================================
 
-RHS_FILE            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.01.08 E14\Retina2\Recordings on Retina\Ch2_300us_50us_15uA_1Hz_20pulse_250108_155301\Ch2_300us_50us_15uA_1Hz_20pulse_250108_155301.rhs'
-EDF_FILE            = r'C:\Shani\MEA mini1200\2025.11.02 e14_Shani\Retina2\phase1-normal\2025-11-02T11-12-26J6_10uA_300us_60us_20Hz_100pulses.edf'
-EDF_STIM_ELECTRODE  = 'G6'     # grid label of the stim electrode, or None
+RHS_FILE            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\For figures\Stim with MEA\New folder\ChE11_20uA_300us_50us_1Hz_250309_172137.rhs'
+EDF_FILE            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\For figures\Stim with MEA\New folder\id1 ChE11_20uA_300us_50us_1Hz_100pulsesB-00071.edf'
+EDF_STIM_ELECTRODE  = 'E11'
 
-Apply_filter        = True
-Impedance_check     = False
-Direct_response     = True
-Indirect_response   = False
-Spontaneous         = False
+# --- Direct response ---
+DIRECT_WIN_MS       = 15.0
+DIRECT_BLANK_MS     = 3.5
+
+# --- Indirect response ---
+INDIRECT_BLANK_MS   = 15.0
+INDIRECT_THRESH_STD = 4.0
+
+# --- Spontaneous ---
+SPONT_MIN_DUR_MS    = 5.0
+SPONT_THRESH_STD    = 4.0
 
 # ============================================================
 #  MAIN
@@ -28,9 +34,46 @@ Spontaneous         = False
 
 if __name__ == '__main__':
 
-    print('Loading Intan RHS...')
-    rhs_rec = load_rhs(RHS_FILE)
-
-    print('Loading MEA EDF...')
+    # ── MEA EDF ──────────────────────────────────────────────
+    print()
+    print('=' * 60)
+    print('MEA EDF')
+    print('=' * 60)
     edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
     print(edf_rec)
+
+    edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS,
+                                   blank_ms=DIRECT_BLANK_MS)
+    print(edf_rec.direct_response)
+
+    edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS,
+                                     threshold_std=INDIRECT_THRESH_STD)
+    print(edf_rec.indirect_response)
+
+    # edf_rec.detect_spontaneous(min_duration_ms=SPONT_MIN_DUR_MS,
+    #                            threshold_std=SPONT_THRESH_STD)
+    # print(edf_rec.spontaneous)
+
+    print(edf_rec)
+
+
+    # ── Intan RHS ────────────────────────────────────────────
+    print('=' * 60)
+    print('Intan RHS')
+    print('=' * 60)
+    rhs_rec = load_rhs(RHS_FILE)
+    print(rhs_rec)
+
+    rhs_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS,
+                                   blank_ms=DIRECT_BLANK_MS)
+    print(rhs_rec.direct_response)
+
+    rhs_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS,
+                                     threshold_std=INDIRECT_THRESH_STD)
+    print(rhs_rec.indirect_response)
+
+    # rhs_rec.detect_spontaneous(min_duration_ms=SPONT_MIN_DUR_MS,
+    #                            threshold_std=SPONT_THRESH_STD)
+    # print(rhs_rec.spontaneous)
+
+    print(rhs_rec)
