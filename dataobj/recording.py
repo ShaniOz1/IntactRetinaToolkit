@@ -204,7 +204,7 @@ class RetinalRecording:
     def blank(
         self,
         duration_ms: float = 2.0,
-        pre_ms: float = 0.0,
+        pre_ms: float = 5.0,
         source: str = 'recording_data',
     ) -> None:
         """
@@ -265,7 +265,7 @@ class RetinalRecording:
         self,
         data_type: str = 'filtered',
         win_size_ms: float = 15.0,
-        blank_ms: float = 3.5,
+        threshold: float | None = None,
     ) -> None:
         """
         Detect direct (stimulus-evoked) responses and populate
@@ -288,10 +288,13 @@ class RetinalRecording:
         blank_ms : float
             Blanking duration after stim onset in ms (applied internally
             before detection). Default: 3.5.
+        threshold : float or None
+            If provided, use this value directly as the detection threshold
+            (EDF pipeline) instead of computing it from the data.
         """
         from dataobj.analysis.direct import run_direct_response
         self.direct_response = run_direct_response(
-            self, data_type, win_size_ms, blank_ms
+            self, data_type, win_size_ms, threshold
         )
         print(f"[direct] {len(self.direct_response)} spikes detected "
               f"across {self.direct_response['channel'].nunique()} channels "

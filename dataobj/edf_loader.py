@@ -146,11 +146,10 @@ def _load_stim_from_txt(
             values = line.strip().split('\t')
             if not values or values == ['']:
                 continue
-            row = []
-            for v in values:
-                numeric = ''.join(c for c in v.strip() if c in '0123456789.-+')
-                if numeric:
-                    row.append(float(numeric))
+            try:
+                row = [float(s[:-2]) for s in values if len(s) > 2]
+            except ValueError:
+                continue
             if row:
                 data_matrix.append(row)
 

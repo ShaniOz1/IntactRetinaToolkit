@@ -545,3 +545,168 @@ def plot_overlay_pulses(
         plt.close(fig)
     else:
         plt.show()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Overlay spike windows on MEA grid
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VIZ_DATA_ATTRS = {
+    'filtered': 'filtered_data',
+    'blanked':  'blanked_data',
+    'raw':      'recording_data',
+}
+
+
+def plot_overlay_spikes(
+    rec,
+    win_size_ms: float = 10.0,
+    data_type: str = 'blanked',
+    threshold: float | None = None,
+    ylim: tuple[float, float] = (-1.0, 1.0),
+    save: bool = True,
+    output_folder: str | None = None,
+) -> None:
+    """
+    Overlay all pulse windows for every channel on a 12×12 MEA grid.
+
+    Each subplot position corresponds to the electrode's physical location.
+    All pulse traces are plotted in black with a thin line.
+    An optional horizontal grey dashed threshold line (and its negative) is
+    drawn per subplot.
+    Unused grid positions are hidden.
+
+    Supports EDF recordings only; RHS support will be added later.
+
+    Parameters
+    ----------
+    rec : RetinalRecording
+    win_size_ms : float
+        Window length in ms to extract after each stim onset. Default: 10.
+    data_type : {'blanked', 'filtered', 'raw'}
+        Which data array to plot. Default: 'blanked'.
+    threshold : float | None
+        If provided, draw horizontal grey dashed lines at ±threshold.
+    ylim : tuple[float, float]
+        Y-axis limits for every subplot. Default: (-1, 1).
+    save : bool
+        If True and output_folder is set, saves the figure to disk.
+    output_folder : str | None
+        Directory in which to save the figure. If None, shows interactively.
+    """
+    if rec.source == 'rhs':
+        # RHS implementation coming soon
+        return
+
+    # ── EDF ─────────────────────────────────────────────────────────────────
+    attr = _VIZ_DATA_ATTRS.get(data_type)
+    if attr is None:
+        raise ValueError(
+            f"data_type must be 'blanked', 'filtered', or 'raw'; got {data_type!r}"
+        )
+    data = getattr(rec, attr, None)
+    if data is None:
+        raise ValueError(f"rec.{attr} is None — run the appropriate preprocessing step first.")
+
+    sample_rate  = rec.sample_rate
+    stim_indices = rec.stim_indices
+    locations    = rec.channel_locations   # list[tuple[int,int] | None]
+
+    win_samples = int(win_size_ms / 1000 * sample_rate)
+    xlim        = (0, win_size_ms)
+
+    # Identify stimulation electrode grid position
+    stim_pos = None
+    if rec.stim_channel_name:
+        for ch_idx, ch_name in enumerate(rec.channel_names):
+            if rec.stim_channel_name in ch_name:
+                loc = locations[ch_idx] if ch_idx < len(locations) else None
+                if loc is not None:
+                    stim_pos = (loc[0], loc[1])
+                break
+
+    fig, axes = plt.subplots(12, 12, figsize=(15, 10))
+    plt.subplots_adjust(wspace=0.05, hspace=0.05)
+
+    used_positions = set()
+
+    for ch_idx, ch_name in enumerate(rec.channel_names):
+        loc = locations[ch_idx] if ch_idx < len(locations) else None
+        if loc is None:
+            continue
+        row, col = loc
+        if not (0 <= row < 12 and 0 <= col < 12):
+            continue
+
+        used_positions.add((row, col))
+        ax      = axes[row, col]
+        ch_data = data[ch_idx, :]
+
+        for stim_idx in stim_indices:
+            start  = int(stim_idx)
+            end    = int(min(stim_idx + win_samples, len(ch_data)))
+            window = ch_data[start:end]
+            if len(window) == 0:
+                continue
+            times = np.arange(len(window)) / sample_rate * 1000
+            ax.plot(times, window, color='black', linewidth=0.2)
+
+        if threshold is not None:
+            ax.axhline(-threshold, color='grey', linewidth=0.5, linestyle='--')
+
+        # Channel label — top-left corner
+        short_label = ch_name.split()[-1].upper() if ' ' in ch_name else ch_name.lower()
+        ax.text(0.05, 0.95, short_label, transform=ax.transAxes,
+                fontsize=6, va='top', ha='left', color='dimgrey')
+
+        # Red dot for stimulation electrode
+        if stim_pos is not None and (row, col) == stim_pos:
+            cx = (xlim[0] + xlim[1]) / 2
+            cy = (ylim[0] + ylim[1]) / 2
+            ax.plot(cx, cy, 'o', color='red', markersize=4, zorder=5)
+
+        for side, spine in ax.spines.items():
+            spine.set_visible(side in ('bottom', 'left'))
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # Hide unused subplots
+    for r in range(12):
+        for c in range(12):
+            if (r, c) not in used_positions:
+                axes[r, c].set_visible(False)
+
+    # Bottom-most right used subplot: add axis ticks with tiny font
+    if used_positions:
+        max_row = max(r for r, c in used_positions)
+        max_col = max(c for r, c in used_positions if r == max_row)
+        br_ax = axes[max_row, max_col]
+        x_ticks = [0, win_size_ms / 2, win_size_ms]
+        br_ax.set_xticks(x_ticks)
+        br_ax.set_xticklabels([f'{v:.0f}' for v in x_ticks], fontsize=6)
+        y_ticks = [ylim[0], (ylim[0] + ylim[1]) / 2, ylim[1]]
+        br_ax.set_yticks(y_ticks)
+        br_ax.set_yticklabels([f'{v:.0f}' for v in y_ticks], fontsize=6)
+        br_ax.tick_params(axis='both', length=2, pad=1)
+        br_ax.set_xlabel('ms', fontsize=6, labelpad=1)
+        br_ax.set_ylabel('mV', fontsize=6, labelpad=1)
+
+    data_label = data_type.capitalize()
+    plt.suptitle(f'{rec.file_name}  [{data_label}]', fontsize=9)
+
+    stim_handle = plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='red',
+                             markersize=4, label='Stimulation\nelectrode')
+    thresh_handle = plt.Line2D([0], [0], color='grey', linewidth=0.8,
+                               linestyle='--', label='Threshold')
+    fig.legend(handles=[stim_handle, thresh_handle], loc='upper right',
+               fontsize='x-small', frameon=False, borderaxespad=1)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+
+    if save and output_folder:
+        fig.savefig(f'{output_folder}/overlay_spikes_{data_type}.png', dpi=150)
+        plt.close(fig)
+    else:
+        plt.show()

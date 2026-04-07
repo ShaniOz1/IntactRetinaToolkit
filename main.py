@@ -6,7 +6,12 @@ Edit the params below and run:
     python main.py
 """
 
+import os
+
 from dataobj import load_rhs, load_edf
+from dataviz.viz import plot_overlay_spikes
+
+RESULTS_DIR = 'Results'
 
 # ============================================================
 #  PARAMS
@@ -18,7 +23,8 @@ EDF_STIM_ELECTRODE  = 'E11'
 
 # --- Direct response ---
 DIRECT_WIN_MS       = 10.0
-DIRECT_BLANK_MS     = 1.0
+BLANK_MS     = 1.5
+DIRECT_THRESHOLD_UV    = 0.3  # set to None to compute threshold from data
 
 # --- Indirect response ---
 INDIRECT_BLANK_MS   = 15.0
@@ -34,6 +40,8 @@ SPONT_THRESH_STD    = 4.0
 
 if __name__ == '__main__':
 
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
     # ── MEA EDF ──────────────────────────────────────────────
     print()
     print('=' * 60)
@@ -41,9 +49,14 @@ if __name__ == '__main__':
     print('=' * 60)
     edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
     edf_rec.filter()
-    edf_rec.blank(source='filtered_data')
+    edf_rec.blank(duration_ms=BLANK_MS, source='filtered_data')
 
-    edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, blank_ms=DIRECT_BLANK_MS)
+    edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=DIRECT_THRESHOLD_UV)
+    plot_overlay_spikes(rec=edf_rec,
+                        win_size_ms=DIRECT_WIN_MS,
+                        data_type = 'filtered',
+                        threshold=DIRECT_THRESHOLD_UV,
+                        output_folder=RESULTS_DIR)
 
     edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS, threshold_std=INDIRECT_THRESH_STD)
 
@@ -60,7 +73,7 @@ if __name__ == '__main__':
     print(rhs_rec)
 
     rhs_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS,
-                                   blank_ms=DIRECT_BLANK_MS)
+                                   threshold=DIRECT_THRESHOLD_UV)
     print(rhs_rec.direct_response)
 
     rhs_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS,

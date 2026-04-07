@@ -26,7 +26,7 @@ def run_direct_response(
     rec,
     data_type: str = 'filtered',
     win_size_ms: float = 15.0,
-    blank_ms: float = 3.5,
+    threshold: float | None = None,
 ) -> pd.DataFrame:
     """
     Detect direct responses and return a DataFrame.
@@ -44,6 +44,9 @@ def run_direct_response(
         Window extracted around each stim pulse, in ms.
     blank_ms : float
         Samples zeroed after each stim onset before detection, in ms.
+    threshold : float or None
+        If provided, use this value directly as the detection threshold
+        (EDF pipeline) instead of computing it from the data.
 
     Returns
     -------
@@ -57,9 +60,9 @@ def run_direct_response(
         return _empty_direct_df()
 
     if rec.source == 'rhs':
-        return _run_rhs(rec, data_type, win_size_ms, blank_ms)
+        return _run_rhs(rec, data_type, win_size_ms)
     elif rec.source == 'edf':
-        return _run_edf(rec, blank_ms)
+        return _run_edf(rec, win_size_ms, threshold)
     else:
         raise ValueError(
             f"Unsupported recording source: {rec.source!r}. "
@@ -115,11 +118,11 @@ def _run_rhs(rec, data_type: str, win_size_ms: float, blank_ms: float) -> pd.Dat
 # EDF pipeline: threshold on blanked+filtered signal
 # ─────────────────────────────────────────────────────────────
 
-def _run_edf(rec, blank_ms: float) -> pd.DataFrame:
-    blank_samples   = int(blank_ms / 1000 * rec.sample_rate)
-    window_samples  = blank_samples   # detection window after stim onset
+def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.DataFrame:
+    window_samples = int(win_size_ms / 1000 * rec.sample_rate)
 
-    data = _resolve_data(rec, 'blanked')
+    data     = _resolve_data(rec, 'blanked')
+    raw_data = _resolve_data(rec, 'raw')
     rows = []
     stim_ch_name = rec.stim_channel_name
 
@@ -128,23 +131,21 @@ def _run_edf(rec, blank_ms: float) -> pd.DataFrame:
             continue
 
         ch_data = data[ch_idx, :]
-        noise   = _estimate_noise(ch_data, rec.stim_indices,
-                                  blank_samples, rec.sample_rate)
-        threshold = -4.0 * noise     # negative threshold (downward spikes)
+        ch_threshold = (threshold if threshold is not None
+                        else _compute_threshold(raw_data[ch_idx, :], rec.stim_indices, rec.sample_rate))
 
         for pulse_idx, stim_idx in enumerate(rec.stim_indices):
-            start = int(stim_idx + blank_samples)
-            end   = int(min(stim_idx + blank_samples + window_samples,
-                            len(ch_data)))
+            start = int(stim_idx)
+            end   = int(min(stim_idx + window_samples, len(ch_data)))
             if start >= end:
                 continue
             window = ch_data[start:end]
-            if window.min() > threshold:
+            if window.min() > ch_threshold:
                 continue
 
             peak_local = int(np.argmin(window))
             amp        = float(window[peak_local])
-            lat_ms     = (blank_samples + peak_local) / rec.sample_rate * 1000
+            lat_ms     = peak_local / rec.sample_rate * 1000
             wid_ms     = _estimate_width(window, peak_local, rec.sample_rate)
 
             rows.append({
@@ -291,28 +292,30 @@ def _detect_spike(
     return amp, lat_ms, width_ms
 
 
-def _estimate_noise(
+def _compute_threshold(
     ch_data: np.ndarray,
     stim_indices: np.ndarray,
-    blank_samples: int,
     sample_rate: int,
 ) -> float:
     """
-    Estimate per-channel noise std from signal segments far from stim pulses.
+    Compute detection threshold from raw data.
+
+    For each stimulus, take the 1 ms window starting 10 ms after onset,
+    average all windows, then return mean - 0.15 as the threshold.
     """
-    mask = np.ones(len(ch_data), dtype=bool)
+    window_size = int(0.001 * sample_rate)
+    windows = []
     for idx in stim_indices:
-        start = int(max(0, idx - int(0.005 * sample_rate))) # 5 ms before
-        end   = int(min(len(ch_data), idx + blank_samples)) # blanking
-        mask[start:end] = False
-    quiet = ch_data[mask]
+        start = int(idx + 0.01 * sample_rate)
+        end   = start + window_size
+        if end <= len(ch_data):
+            windows.append(ch_data[start:end])
 
-    import matplotlib.pyplot as plt
-    plt.plot(ch_data)
-    plt.scatter(stim_indices, np.ones(100), color='r')
-    plt.plot(quiet)
+    if len(windows) == 0:
+        return 1.0 - 0.15
 
-    return float(np.std(quiet)) if len(quiet) > 0 else 1.0
+    avg_window = np.mean(np.array(windows), axis=0)
+    return float(np.mean(avg_window)) - 0.15
 
 
 def _estimate_width(
