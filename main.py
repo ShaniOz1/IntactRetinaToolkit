@@ -9,7 +9,7 @@ Edit the params below and run:
 import os
 
 from dataobj import load_rhs, load_edf
-from dataviz.viz import plot_overlay_spikes
+from dataviz.viz import *
 
 RESULTS_DIR = 'Results'
 
@@ -23,7 +23,7 @@ EDF_STIM_ELECTRODE  = 'E11'
 
 # --- Direct response ---
 DIRECT_WIN_MS       = 10.0
-BLANK_MS     = 1.5
+BLANK_MS     = 2.0
 DIRECT_THRESHOLD_UV    = 0.3  # set to None to compute threshold from data
 
 # --- Indirect response ---
@@ -52,11 +52,13 @@ if __name__ == '__main__':
     edf_rec.blank(duration_ms=BLANK_MS, source='filtered_data')
 
     edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=DIRECT_THRESHOLD_UV)
-    plot_overlay_spikes(rec=edf_rec,
-                        win_size_ms=DIRECT_WIN_MS,
-                        data_type = 'filtered',
-                        threshold=DIRECT_THRESHOLD_UV,
-                        output_folder=RESULTS_DIR)
+    # plot_overlay_spikes(rec=edf_rec,
+    #                     win_size_ms=DIRECT_WIN_MS,
+    #                     data_type = 'blanked',
+    #                     threshold=DIRECT_THRESHOLD_UV,
+    #                     output_folder=RESULTS_DIR)
+
+    plot_direct_response_summary(rec=edf_rec, output_folder=RESULTS_DIR)
 
     edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS, threshold_std=INDIRECT_THRESH_STD)
 

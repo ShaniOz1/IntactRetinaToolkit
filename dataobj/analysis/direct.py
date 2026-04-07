@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import scipy.signal
+from scipy.optimize import curve_fit
 from sklearn.decomposition import FastICA
 
 
@@ -52,7 +53,8 @@ def run_direct_response(
     -------
     pd.DataFrame
         Columns: channel, pulse_index, amplitude (µV), latency (ms),
-        width (ms).
+        width (ms), amplitude_decay (exponential decay constant k, one
+        value per channel).
     """
     if rec.stim_indices is None or len(rec.stim_indices) == 0:
         warnings.warn("[direct] stim_indices is None — returning empty DataFrame.",
@@ -60,14 +62,18 @@ def run_direct_response(
         return _empty_direct_df()
 
     if rec.source == 'rhs':
-        return _run_rhs(rec, data_type, win_size_ms)
+        df = _run_rhs(rec, data_type, win_size_ms)
     elif rec.source == 'edf':
-        return _run_edf(rec, win_size_ms, threshold)
+        df = _run_edf(rec, win_size_ms, threshold)
     else:
         raise ValueError(
             f"Unsupported recording source: {rec.source!r}. "
             "Expected 'rhs' or 'edf'."
         )
+
+    df = add_amplitude_decay(df)
+
+    return df
 
 
 # ─────────────────────────────────────────────────────────────
@@ -334,5 +340,60 @@ def _estimate_width(
 
 def _empty_direct_df() -> pd.DataFrame:
     return pd.DataFrame(columns=[
-        'channel', 'pulse_index', 'amplitude', 'latency', 'width'
+        'channel', 'pulse_index', 'amplitude', 'latency', 'width',
+        'amplitude_decay',
     ])
+
+
+# ─────────────────────────────────────────────────────────────
+# Amplitude decay enrichment
+# ─────────────────────────────────────────────────────────────
+
+def add_amplitude_decay(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add an ``amplitude_decay`` column to a direct-response DataFrame.
+
+    For each channel the absolute amplitudes across pulses are fitted to::
+
+        f(pulse_index) = A · exp(−k · pulse_index)
+
+    The decay constant *k* is stored in ``amplitude_decay`` — the same
+    value for every row belonging to that channel.  Channels with fewer
+    than 3 detected pulses, or for which the fit fails, receive ``NaN``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Direct response DataFrame with columns: channel, pulse_index,
+        amplitude.
+
+    Returns
+    -------
+    pd.DataFrame
+        New DataFrame with an ``amplitude_decay`` column added.
+    """
+    def _exp_model(x, a, k):
+        return a * np.exp(-k * x)
+
+    df = df.copy()
+    df['amplitude_decay'] = np.nan
+
+    for ch, group in df.groupby('channel'):
+        sorted_group = group.sort_values('pulse_index')
+        x = sorted_group['pulse_index'].values.astype(float)
+        y = np.abs(sorted_group['amplitude'].values)
+
+        if len(x) < 3:
+            continue
+
+        try:
+            a0 = float(y[0]) if y[0] > 0 else 1.0
+            p0 = [a0, 0.01]
+            popt, _ = curve_fit(_exp_model, x, y, p0=p0, maxfev=5000,
+                                bounds=([0, -np.inf], [np.inf, np.inf]))
+            k = float(popt[1])
+            df.loc[sorted_group.index, 'amplitude_decay'] = k
+        except Exception:
+            pass
+
+    return df

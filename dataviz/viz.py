@@ -13,7 +13,8 @@ plot_direct_spikes     — overlay + average of spike waveforms per responding c
 plot_artifacts_vs_signals — raw pulses (row 1) vs ICA-cleaned signals (row 2)
 plot_spike_amps_vs_time   — spike amplitude over the course of the recording
 plot_indirect_response    — raster + single-channel trace + response metrics
-plot_overlay_pulses       — raw pulse overlays (single obj) or averages (multi-obj comparison)
+plot_overlay_pulses           — raw pulse overlays (single obj) or averages (multi-obj comparison)
+plot_direct_response_summary  — MEA heatmaps of mean amp/latency/width + decay heatmap + decay trace
 """
 
 from __future__ import annotations
@@ -707,6 +708,178 @@ def plot_overlay_spikes(
 
     if save and output_folder:
         fig.savefig(f'{output_folder}/overlay_spikes_{data_type}.png', dpi=150)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Direct-response summary
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_direct_response_summary(
+    rec,
+    save: bool = True,
+    output_folder: str | None = None,
+) -> None:
+    """
+    Two-row summary figure for direct-response results.
+
+    Row 1 — three MEA heatmaps (12×12 grid):
+        mean amplitude (µV), mean latency (ms), mean width (ms),
+        each averaged across all detected pulses per channel.
+
+    Row 2:
+        Left  (1/3 width): MEA heatmap of the per-channel amplitude-decay
+            constant *k* from an exponential fit  A·exp(−k·pulse_index).
+        Right (2/3 width): |amplitude| vs pulse number for the channel
+            that shows the steepest decay, with the fitted curve overlaid.
+
+    All heatmaps use the ``Purples`` colormap.
+
+    Parameters
+    ----------
+    rec : RetinalRecording
+        Must have ``rec.direct_response`` populated (call
+        ``rec.detect_direct_response()`` first).  The DataFrame must
+        contain an ``amplitude_decay`` column; this is added automatically
+        by ``detect_direct_response`` starting from the version that ships
+        ``add_amplitude_decay``.
+    save : bool
+        Save to *output_folder* when True (default). Show interactively
+        otherwise.
+    output_folder : str | None
+        Directory for the saved figure. Ignored when *save* is False.
+    """
+    df = rec.direct_response
+    if df is None or df.empty:
+        raise ValueError(
+            "rec.direct_response is None or empty — call "
+            "rec.detect_direct_response() first."
+        )
+    if 'amplitude_decay' not in df.columns:
+        from dataobj.analysis.direct import add_amplitude_decay
+        df = add_amplitude_decay(df)
+        rec.direct_response = df
+
+    # ── Channel → grid-location map ──────────────────────────────
+    ch_to_loc: dict[str, tuple[int, int]] = {}
+    for ch_idx, ch_name in enumerate(rec.channel_names):
+        loc = (rec.channel_locations[ch_idx]
+               if ch_idx < len(rec.channel_locations) else None)
+        if loc is not None:
+            ch_to_loc[ch_name] = (int(loc[0]), int(loc[1]))
+
+    # ── Per-channel summary stats ─────────────────────────────────
+    df_work = df.copy()
+    df_work['amplitude'] = df_work['amplitude'].abs()
+
+    ch_stats = (
+        df_work
+        .groupby('channel', sort=False)
+        .agg(
+            mean_amplitude=('amplitude',      'mean'),
+            mean_latency=  ('latency',        'mean'),
+            mean_width=    ('width',          'mean'),
+            amplitude_decay=('amplitude_decay', 'first'),
+        )
+        .reset_index()
+    )
+
+    # ── Build 12×12 grids ─────────────────────────────────────────
+    def _build_grid(col: str) -> np.ndarray:
+        grid = np.full((12, 12), np.nan)
+        for _, row in ch_stats.iterrows():
+            loc = ch_to_loc.get(row['channel'])
+            if loc is not None:
+                r, c = loc
+                if 0 <= r < 12 and 0 <= c < 12:
+                    grid[r, c] = row[col]
+        return grid
+
+    grid_amp   = _build_grid('mean_amplitude')
+    grid_lat   = _build_grid('mean_latency')
+    grid_wid   = _build_grid('mean_width')
+    grid_decay = _build_grid('amplitude_decay')
+
+    # ── Channel with the highest decay constant ───────────────────
+    valid = ch_stats.dropna(subset=['amplitude_decay'])
+    highest_decay_ch = (
+        valid.loc[valid['amplitude_decay'].idxmax(), 'channel']
+        if not valid.empty else None
+    )
+
+    # ── Figure / GridSpec ─────────────────────────────────────────
+    fig = plt.figure(figsize=(15, 9))
+    gs  = GridSpec(2, 3, figure=fig, hspace=0.38, wspace=0.32)
+
+    ax_amp   = fig.add_subplot(gs[0, 0])
+    ax_lat   = fig.add_subplot(gs[0, 1])
+    ax_wid   = fig.add_subplot(gs[0, 2])
+    ax_decay = fig.add_subplot(gs[1, 0])          # 1/3 width
+    ax_trace = fig.add_subplot(gs[1, 1:])         # 2/3 width
+
+    cmap = 'Purples'
+
+    def _heatmap(ax, grid, title, unit):
+        im = ax.imshow(grid, cmap=cmap, aspect='auto', origin='upper')
+        ax.set_title(title, fontsize=9, pad=4)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        cbar = plt.colorbar(im, ax=ax, shrink=0.85, pad=0.03)
+        cbar.set_label(unit, fontsize=7)
+        cbar.ax.tick_params(labelsize=6)
+
+    _heatmap(ax_amp,   grid_amp,   'Mean Amplitude',    'µV')
+    _heatmap(ax_lat,   grid_lat,   'Mean Latency',      'ms')
+    _heatmap(ax_wid,   grid_wid,   'Mean Width',        'ms')
+    _heatmap(ax_decay, grid_decay, 'Amplitude Decay  k', 'a.u.')
+
+    # ── Amplitude vs pulse — highest-decay channel ────────────────
+    if highest_decay_ch is not None:
+        ch_df      = (df[df['channel'] == highest_decay_ch]
+                      .sort_values('pulse_index'))
+        pulse_nums = ch_df['pulse_index'].values
+        amps       = ch_df['amplitude'].abs().values
+        k_val      = float(
+            ch_stats.loc[
+                ch_stats['channel'] == highest_decay_ch,
+                'amplitude_decay'
+            ].values[0]
+        )
+        a0 = float(amps[0]) if len(amps) > 0 and amps[0] > 0 else 1.0
+        x_fit = np.linspace(pulse_nums[0], pulse_nums[-1], 300)
+        y_fit = a0 * np.exp(-k_val * x_fit)
+
+        ax_trace.scatter(pulse_nums, amps,
+                         color='#b39ddb', s=18, zorder=3,
+                         label='|Amplitude|')
+        ax_trace.plot(x_fit, y_fit,
+                      color='#6a1b9a', linewidth=1.5, linestyle='--',
+                      label=f'Exp fit  k = {k_val:.4f}')
+        ax_trace.set_xlabel('Pulse #', fontsize=9)
+        ax_trace.set_ylabel('|Amplitude| (µV)', fontsize=9)
+        ax_trace.set_title(
+            f'Amplitude decay — {highest_decay_ch}  (highest decay)',
+            fontsize=9,
+        )
+        ax_trace.legend(fontsize=7, frameon=False)
+        ax_trace.spines[['top', 'right']].set_visible(False)
+    else:
+        ax_trace.text(0.5, 0.5, 'No decay data available',
+                      ha='center', va='center',
+                      transform=ax_trace.transAxes, fontsize=10)
+        ax_trace.set_axis_off()
+
+    plt.suptitle(
+        f'{rec.file_name} — Direct Response Summary', fontsize=11
+    )
+
+    if save and output_folder:
+        fig.savefig(
+            f'{output_folder}/direct_response_summary.png',
+            dpi=150, bbox_inches='tight',
+        )
         plt.close(fig)
     else:
         plt.show()
