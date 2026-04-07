@@ -263,6 +263,7 @@ class RetinalRecording:
 
     def detect_direct_response(
         self,
+        data_type: str = 'filtered',
         win_size_ms: float = 15.0,
         blank_ms: float = 3.5,
     ) -> None:
@@ -271,7 +272,7 @@ class RetinalRecording:
         rec.direct_response.
 
         For RHS: ICA-based artifact removal followed by spike detection.
-        For EDF: threshold-based detection on the blanked+filtered signal.
+        For EDF: threshold-based detection on the blanked signal.
 
         Results are stored in rec.direct_response as a DataFrame with
         columns: channel, pulse_index, amplitude (µV), latency (ms),
@@ -279,6 +280,9 @@ class RetinalRecording:
 
         Parameters
         ----------
+        data_type : str
+            Which data array to use. RHS accepts 'filtered', 'blanked', or
+            'raw' (default 'filtered'). EDF always uses 'blanked'.
         win_size_ms : float
             Analysis window size per pulse in ms. Default: 15.
         blank_ms : float
@@ -286,7 +290,9 @@ class RetinalRecording:
             before detection). Default: 3.5.
         """
         from dataobj.analysis.direct import run_direct_response
-        self.direct_response = run_direct_response(self, win_size_ms, blank_ms)
+        self.direct_response = run_direct_response(
+            self, data_type, win_size_ms, blank_ms
+        )
         print(f"[direct] {len(self.direct_response)} spikes detected "
               f"across {self.direct_response['channel'].nunique()} channels "
               f"→ rec.direct_response")

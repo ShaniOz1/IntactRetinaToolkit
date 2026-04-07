@@ -17,8 +17,8 @@ EDF_FILE            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14
 EDF_STIM_ELECTRODE  = 'E11'
 
 # --- Direct response ---
-DIRECT_WIN_MS       = 15.0
-DIRECT_BLANK_MS     = 3.5
+DIRECT_WIN_MS       = 10.0
+DIRECT_BLANK_MS     = 1.0
 
 # --- Indirect response ---
 INDIRECT_BLANK_MS   = 15.0
@@ -40,19 +40,14 @@ if __name__ == '__main__':
     print('MEA EDF')
     print('=' * 60)
     edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
-    print(edf_rec)
+    edf_rec.filter()
+    edf_rec.blank(source='filtered_data')
 
-    edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS,
-                                   blank_ms=DIRECT_BLANK_MS)
-    print(edf_rec.direct_response)
+    edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, blank_ms=DIRECT_BLANK_MS)
 
-    edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS,
-                                     threshold_std=INDIRECT_THRESH_STD)
-    print(edf_rec.indirect_response)
+    edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS, threshold_std=INDIRECT_THRESH_STD)
 
-    # edf_rec.detect_spontaneous(min_duration_ms=SPONT_MIN_DUR_MS,
-    #                            threshold_std=SPONT_THRESH_STD)
-    # print(edf_rec.spontaneous)
+    # edf_rec.detect_spontaneous(min_duration_ms=SPONT_MIN_DUR_MS, threshold_std=SPONT_THRESH_STD)
 
     print(edf_rec)
 

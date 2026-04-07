@@ -24,6 +24,7 @@ from sklearn.decomposition import FastICA
 
 def run_direct_response(
     rec,
+    data_type: str = 'filtered',
     win_size_ms: float = 15.0,
     blank_ms: float = 3.5,
 ) -> pd.DataFrame:
@@ -35,6 +36,10 @@ def run_direct_response(
     Parameters
     ----------
     rec : RetinalRecording
+    data_type : str
+        Which data array to use for detection.
+        RHS accepts 'filtered', 'blanked', or 'raw' (default 'filtered').
+        EDF always uses 'blanked' regardless of this argument.
     win_size_ms : float
         Window extracted around each stim pulse, in ms.
     blank_ms : float
@@ -51,22 +56,26 @@ def run_direct_response(
                       UserWarning)
         return _empty_direct_df()
 
-    data = _get_data(rec)
-
     if rec.source == 'rhs':
-        return _run_rhs(rec, data, win_size_ms, blank_ms)
+        return _run_rhs(rec, data_type, win_size_ms, blank_ms)
+    elif rec.source == 'edf':
+        return _run_edf(rec, blank_ms)
     else:
-        return _run_edf(rec, data, blank_ms)
+        raise ValueError(
+            f"Unsupported recording source: {rec.source!r}. "
+            "Expected 'rhs' or 'edf'."
+        )
 
 
 # ─────────────────────────────────────────────────────────────
 # RHS pipeline: ICA artifact removal → spike detection
 # ─────────────────────────────────────────────────────────────
 
-def _run_rhs(rec, data: np.ndarray, win_size_ms: float, blank_ms: float) -> pd.DataFrame:
+def _run_rhs(rec, data_type: str, win_size_ms: float, blank_ms: float) -> pd.DataFrame:
     win_samples   = int(win_size_ms  / 1000 * rec.sample_rate)
     blank_samples = int(blank_ms     / 1000 * rec.sample_rate)
 
+    data   = _resolve_data(rec, data_type)
     pulses = _extract_pulses(rec.stim_indices, data, win_samples)
     # pulses: (n_pulses, n_channels, n_samples_per_pulse)
 
@@ -106,10 +115,11 @@ def _run_rhs(rec, data: np.ndarray, win_size_ms: float, blank_ms: float) -> pd.D
 # EDF pipeline: threshold on blanked+filtered signal
 # ─────────────────────────────────────────────────────────────
 
-def _run_edf(rec, data: np.ndarray, blank_ms: float) -> pd.DataFrame:
+def _run_edf(rec, blank_ms: float) -> pd.DataFrame:
     blank_samples   = int(blank_ms / 1000 * rec.sample_rate)
     window_samples  = blank_samples   # detection window after stim onset
 
+    data = _resolve_data(rec, 'blanked')
     rows = []
     stim_ch_name = rec.stim_channel_name
 
@@ -152,13 +162,30 @@ def _run_edf(rec, data: np.ndarray, blank_ms: float) -> pd.DataFrame:
 # Shared helpers
 # ─────────────────────────────────────────────────────────────
 
-def _get_data(rec) -> np.ndarray:
-    """Return the best available data array (filtered > blanked > raw)."""
-    if rec.filtered_data is not None:
-        return rec.filtered_data
-    if rec.blanked_data is not None:
-        return rec.blanked_data
-    return rec.recording_data
+_DATA_ATTRS = {
+    'filtered': 'filtered_data',
+    'blanked':  'blanked_data',
+    'raw':      'recording_data',
+}
+
+def _resolve_data(rec, data_type: str) -> np.ndarray:
+    """Return the requested data array from rec.
+
+    Parameters
+    ----------
+    data_type : {'filtered', 'blanked', 'raw'}
+    """
+    attr = _DATA_ATTRS.get(data_type)
+    if attr is None:
+        raise ValueError(
+            f"data_type must be 'filtered', 'blanked', or 'raw'; got {data_type!r}"
+        )
+    data = getattr(rec, attr, None)
+    if data is None:
+        raise ValueError(
+            f"rec.{attr} is None — cannot use data_type={data_type!r}"
+        )
+    return data
 
 
 def _extract_pulses(
@@ -275,10 +302,16 @@ def _estimate_noise(
     """
     mask = np.ones(len(ch_data), dtype=bool)
     for idx in stim_indices:
-        start = int(max(0, idx - int(0.005 * sample_rate)))
-        end   = int(min(len(ch_data), idx + blank_samples))
+        start = int(max(0, idx - int(0.005 * sample_rate))) # 5 ms before
+        end   = int(min(len(ch_data), idx + blank_samples)) # blanking
         mask[start:end] = False
     quiet = ch_data[mask]
+
+    import matplotlib.pyplot as plt
+    plt.plot(ch_data)
+    plt.scatter(stim_indices, np.ones(100), color='r')
+    plt.plot(quiet)
+
     return float(np.std(quiet)) if len(quiet) > 0 else 1.0
 
 
