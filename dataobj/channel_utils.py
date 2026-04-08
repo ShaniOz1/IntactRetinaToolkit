@@ -169,12 +169,34 @@ _RHS_INDEX_TO_REAL_CH: list[int] = [0, 1, 2, 3, 4, 5, 6, 7,
                                      24, 25, 26, 27, 28, 29, 30, 31]
 
 # Physical (row, col) location keyed by real channel number.
-# col 0 = left shank, col 1 = right shank (matches the prob16 schematic).
+#
+# The prob16 is a ring probe with 16 active electrodes placed at 16 of
+# 19 evenly-spaced positions around a circle (3 positions at the bottom
+# are empty).  Channel order around the ring (starting at 3 o'clock,
+# going counter-clockwise):
+#   [26, 5, 25, 6, 24, 7, 28, 2, 29, 1, 30, 0, 31, --, --, --, 3, 27, 4]
+#
+# Positions are quantised from the physical (x, y) coordinates onto a
+# 9×9 integer grid (col = round((x+2)/4*8), row = round((2-y)/4*8))
+# so that each channel maps to a unique cell.
 _PROB16_LAYOUT: dict[int, tuple[int, int]] = {
-    0:  (0, 0),  1:  (1, 0),  2:  (2, 0),  3:  (3, 0),
-    4:  (4, 0),  5:  (5, 0),  6:  (6, 0),  7:  (7, 0),
-    24: (0, 1),  25: (1, 1),  26: (2, 1),  27: (3, 1),
-    28: (4, 1),  29: (5, 1),  30: (6, 1),  31: (7, 1),
+    26: (4, 8),  #   0° – 3 o'clock
+     5: (3, 8),  #  19°
+    25: (2, 7),  #  38°
+     6: (1, 6),  #  57°
+    24: (0, 5),  #  76°
+     7: (0, 4),  #  95°
+    28: (0, 2),  # 114°
+     2: (1, 1),  # 133°
+    29: (2, 0),  # 152°
+     1: (3, 0),  # 171°
+    30: (5, 0),  # 189°
+     0: (6, 0),  # 208°
+    31: (7, 1),  # 227°
+    # 246°, 265°, 284° — empty slots
+     3: (7, 6),  # 303°
+    27: (6, 7),  # 322°
+     4: (5, 8),  # 341°
 }
 
 

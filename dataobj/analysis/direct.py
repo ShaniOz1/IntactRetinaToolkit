@@ -15,7 +15,6 @@ import warnings
 import numpy as np
 import pandas as pd
 import scipy.signal
-from scipy.optimize import curve_fit
 from sklearn.decomposition import FastICA
 
 
@@ -77,60 +76,38 @@ def run_direct_response(
 
 
 # ─────────────────────────────────────────────────────────────
-# RHS pipeline: ICA artifact removal → spike detection
+# Shared: threshold-based detection on blanked data
+# (used by both EDF and RHS when data_type='blanked')
 # ─────────────────────────────────────────────────────────────
 
-def _run_rhs(rec, data_type: str, win_size_ms: float, blank_ms: float) -> pd.DataFrame:
-    win_samples   = int(win_size_ms  / 1000 * rec.sample_rate)
-    blank_samples = int(blank_ms     / 1000 * rec.sample_rate)
+def _run_threshold_detection(
+    rec,
+    win_size_ms: float,
+    threshold: float | None = None,
+) -> pd.DataFrame:
+    """
+    Threshold-based direct-response detection on rec.blanked_data.
 
-    data   = _resolve_data(rec, data_type)
-    pulses = _extract_pulses(rec.stim_indices, data, win_samples)
-    # pulses: (n_pulses, n_channels, n_samples_per_pulse)
+    For each channel and each stim pulse, extracts a window of
+    ``win_size_ms`` starting at the stim onset, finds the negative peak,
+    and records it if it crosses the threshold.
 
-    stim_ch_idx = (rec.get_channel_index(rec.stim_channel_name)
-                   if rec.stim_channel_name else None)
-
-    rows = []
-    for ch_idx, ch_name in enumerate(rec.channel_names):
-        if stim_ch_idx is not None and ch_idx == stim_ch_idx:
-            continue
-
-        ch_pulses = pulses[:, ch_idx, :]           # (n_pulses, n_samples)
-        cleaned   = _ica_remove_artifact(ch_pulses)
-
-        for pulse_idx, pulse in enumerate(cleaned):
-            # blank the artifact window before detection
-            pulse_blanked = pulse.copy()
-            pulse_blanked[:blank_samples] = 0.0
-
-            spike = _detect_spike(pulse_blanked, rec.sample_rate)
-            if spike is None:
-                continue
-
-            amp, lat_ms, wid_ms = spike
-            rows.append({
-                'channel':     ch_name,
-                'pulse_index': pulse_idx,
-                'amplitude':   amp,
-                'latency':     lat_ms,
-                'width':       wid_ms,
-            })
-
-    return pd.DataFrame(rows) if rows else _empty_direct_df()
-
-
-# ─────────────────────────────────────────────────────────────
-# EDF pipeline: threshold on blanked+filtered signal
-# ─────────────────────────────────────────────────────────────
-
-def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.DataFrame:
+    Parameters
+    ----------
+    rec : RetinalRecording
+        Must have blanked_data and (for auto-threshold) recording_data.
+    win_size_ms : float
+        Window length per pulse in ms.
+    threshold : float or None
+        Fixed detection threshold (absolute µV). If None, computed
+        per-channel from the raw signal.
+    """
     window_samples = int(win_size_ms / 1000 * rec.sample_rate)
 
     data     = _resolve_data(rec, 'blanked')
     raw_data = _resolve_data(rec, 'raw')
-    rows = []
     stim_ch_name = rec.stim_channel_name
+    rows = []
 
     for ch_idx, ch_name in enumerate(rec.channel_names):
         if stim_ch_name and ch_name == stim_ch_name:
@@ -138,7 +115,9 @@ def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.Data
 
         ch_data = data[ch_idx, :]
         ch_threshold = (threshold if threshold is not None
-                        else _compute_threshold(raw_data[ch_idx, :], rec.stim_indices, rec.sample_rate))
+                        else _compute_threshold(
+                            raw_data[ch_idx, :], rec.stim_indices, rec.sample_rate
+                        ))
 
         for pulse_idx, stim_idx in enumerate(rec.stim_indices):
             start = int(stim_idx)
@@ -146,7 +125,7 @@ def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.Data
             if start >= end:
                 continue
             window = ch_data[start:end]
-            if window.min() > ch_threshold:
+            if abs(window.min()) < ch_threshold:
                 continue
 
             peak_local = int(np.argmin(window))
@@ -163,6 +142,84 @@ def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.Data
             })
 
     return pd.DataFrame(rows) if rows else _empty_direct_df()
+
+
+# ─────────────────────────────────────────────────────────────
+# EDF pipeline
+# ─────────────────────────────────────────────────────────────
+
+def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.DataFrame:
+    return _run_threshold_detection(rec, win_size_ms, threshold)
+
+
+# ─────────────────────────────────────────────────────────────
+# RHS pipeline
+# ─────────────────────────────────────────────────────────────
+
+def _run_rhs(rec, data_type: str, win_size_ms: float) -> pd.DataFrame:
+    """
+    Dispatch to the appropriate RHS detection method based on data_type.
+
+    Parameters
+    ----------
+    data_type : {'blanked', 'filtered', 'raw'}
+        - 'blanked'  : threshold-based detection (same as EDF pipeline).
+        - 'filtered' : ICA artifact removal followed by spike detection.
+        - 'raw'      : alternative detection method (not yet implemented).
+    """
+    if data_type == 'blanked':
+        return _run_threshold_detection(rec, win_size_ms)
+    elif data_type == 'filtered':
+        return _run_rhs_ica(rec, win_size_ms)
+    elif data_type == 'raw':
+        return _run_rhs_raw(rec, win_size_ms)
+    else:
+        raise ValueError(
+            f"data_type must be 'blanked', 'filtered', or 'raw'; got {data_type!r}"
+        )
+
+
+def _run_rhs_ica(rec, win_size_ms: float) -> pd.DataFrame:
+    """RHS detection via ICA artifact removal → spike shape validation."""
+    win_samples = int(win_size_ms / 1000 * rec.sample_rate)
+
+    data   = _resolve_data(rec, 'filtered')
+    pulses = _extract_pulses(rec.stim_indices, data, win_samples)
+    # pulses: (n_pulses, n_channels, n_samples_per_pulse)
+
+    stim_ch_idx = (rec.get_channel_index(rec.stim_channel_name)
+                   if rec.stim_channel_name else None)
+
+    rows = []
+    for ch_idx, ch_name in enumerate(rec.channel_names):
+        if stim_ch_idx is not None and ch_idx == stim_ch_idx:
+            continue
+
+        ch_pulses = pulses[:, ch_idx, :]           # (n_pulses, n_samples)
+        cleaned   = _ica_remove_artifact(ch_pulses)
+
+        for pulse_idx, pulse in enumerate(cleaned):
+            spike = _detect_spike(pulse, rec.sample_rate)
+            if spike is None:
+                continue
+
+            amp, lat_ms, wid_ms = spike
+            rows.append({
+                'channel':     ch_name,
+                'pulse_index': pulse_idx,
+                'amplitude':   amp,
+                'latency':     lat_ms,
+                'width':       wid_ms,
+            })
+
+    return pd.DataFrame(rows) if rows else _empty_direct_df()
+
+
+def _run_rhs_raw(rec, win_size_ms: float) -> pd.DataFrame:
+    """RHS detection on raw data — implementation coming soon."""
+    raise NotImplementedError(
+        "_run_rhs_raw: detection on raw RHS data is not yet implemented."
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -353,13 +410,13 @@ def add_amplitude_decay(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add an ``amplitude_decay`` column to a direct-response DataFrame.
 
-    For each channel the absolute amplitudes across pulses are fitted to::
+    For each channel, percent decay is computed as::
 
-        f(pulse_index) = A · exp(−k · pulse_index)
+        (1 - mean(|amplitude| of last 3 pulses) / mean(|amplitude| of first 3 pulses)) * 100
 
-    The decay constant *k* is stored in ``amplitude_decay`` — the same
-    value for every row belonging to that channel.  Channels with fewer
-    than 3 detected pulses, or for which the fit fails, receive ``NaN``.
+    The result is stored in ``amplitude_decay`` — the same value for every
+    row belonging to that channel.  Channels with fewer than 3 detected
+    pulses receive ``NaN``.
 
     Parameters
     ----------
@@ -372,28 +429,22 @@ def add_amplitude_decay(df: pd.DataFrame) -> pd.DataFrame:
     pd.DataFrame
         New DataFrame with an ``amplitude_decay`` column added.
     """
-    def _exp_model(x, a, k):
-        return a * np.exp(-k * x)
-
     df = df.copy()
     df['amplitude_decay'] = np.nan
 
     for ch, group in df.groupby('channel'):
         sorted_group = group.sort_values('pulse_index')
-        x = sorted_group['pulse_index'].values.astype(float)
         y = np.abs(sorted_group['amplitude'].values)
 
-        if len(x) < 3:
+        if len(y) < 3:
             continue
 
-        try:
-            a0 = float(y[0]) if y[0] > 0 else 1.0
-            p0 = [a0, 0.01]
-            popt, _ = curve_fit(_exp_model, x, y, p0=p0, maxfev=5000,
-                                bounds=([0, -np.inf], [np.inf, np.inf]))
-            k = float(popt[1])
-            df.loc[sorted_group.index, 'amplitude_decay'] = k
-        except Exception:
-            pass
+        mean_first = np.mean(y[:3])
+        if mean_first == 0:
+            continue
+
+        mean_last = np.mean(y[-3:])
+        pct_decay = (1 - mean_last / mean_first) * 100
+        df.loc[sorted_group.index, 'amplitude_decay'] = pct_decay
 
     return df

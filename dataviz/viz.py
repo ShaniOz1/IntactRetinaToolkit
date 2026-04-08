@@ -13,8 +13,10 @@ plot_direct_spikes     — overlay + average of spike waveforms per responding c
 plot_artifacts_vs_signals — raw pulses (row 1) vs ICA-cleaned signals (row 2)
 plot_spike_amps_vs_time   — spike amplitude over the course of the recording
 plot_indirect_response    — raster + single-channel trace + response metrics
-plot_overlay_pulses           — raw pulse overlays (single obj) or averages (multi-obj comparison)
-plot_direct_response_summary  — MEA heatmaps of mean amp/latency/width + decay heatmap + decay trace
+plot_overlay_pulses              — raw pulse overlays (single obj) or averages (multi-obj comparison)
+plot_direct_response_summary     — MEA heatmaps of mean amp/latency/width + decay heatmap + decay trace
+plot_spikes_layout_mea           — overlay all pulse windows on the 12×12 MEA grid (EDF)
+plot_spikes_layout_probe16       — overlay all pulse windows on the prob16 ring layout (RHS)
 """
 
 from __future__ import annotations
@@ -559,7 +561,7 @@ _VIZ_DATA_ATTRS = {
 }
 
 
-def plot_overlay_spikes(
+def plot_spikes_layout_mea(
     rec,
     win_size_ms: float = 10.0,
     data_type: str = 'blanked',
@@ -569,25 +571,23 @@ def plot_overlay_spikes(
     output_folder: str | None = None,
 ) -> None:
     """
-    Overlay all pulse windows for every channel on a 12×12 MEA grid.
+    Overlay all pulse windows for every channel on a 12×12 MEA grid (EDF).
 
     Each subplot position corresponds to the electrode's physical location.
     All pulse traces are plotted in black with a thin line.
-    An optional horizontal grey dashed threshold line (and its negative) is
-    drawn per subplot.
+    An optional horizontal grey dashed threshold line is drawn per subplot.
     Unused grid positions are hidden.
-
-    Supports EDF recordings only; RHS support will be added later.
 
     Parameters
     ----------
     rec : RetinalRecording
+        Must be an EDF recording (rec.source == 'edf').
     win_size_ms : float
         Window length in ms to extract after each stim onset. Default: 10.
     data_type : {'blanked', 'filtered', 'raw'}
         Which data array to plot. Default: 'blanked'.
     threshold : float | None
-        If provided, draw horizontal grey dashed lines at ±threshold.
+        If provided, draw a horizontal grey dashed line at -threshold.
     ylim : tuple[float, float]
         Y-axis limits for every subplot. Default: (-1, 1).
     save : bool
@@ -595,9 +595,8 @@ def plot_overlay_spikes(
     output_folder : str | None
         Directory in which to save the figure. If None, shows interactively.
     """
-    if rec.source == 'rhs':
-        # RHS implementation coming soon
-        return
+    if rec.source != 'edf':
+        raise ValueError("plot_spikes_layout_mea requires an EDF recording.")
 
     # ── EDF ─────────────────────────────────────────────────────────────────
     attr = _VIZ_DATA_ATTRS.get(data_type)
@@ -707,7 +706,172 @@ def plot_overlay_spikes(
     plt.tight_layout(rect=[0, 0, 1, 0.97])
 
     if save and output_folder:
-        fig.savefig(f'{output_folder}/overlay_spikes_{data_type}.png', dpi=150)
+        fig.savefig(f'{output_folder}/spikes_layout_mea_{data_type}.png', dpi=150)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spike overlay — prob16 ring layout (RHS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_spikes_layout_probe16(
+    rec,
+    win_size_ms: float = 10.0,
+    data_type: str = 'blanked',
+    threshold: float | None = None,
+    ylim: tuple[float, float] = (-1.0, 1.0),
+    save: bool = True,
+    output_folder: str | None = None,
+) -> None:
+    """
+    Overlay all pulse windows for every channel on the prob16 ring layout (RHS).
+
+    Subplot positions follow the physical circular arrangement of the probe
+    (9×9 grid, derived from the ring schematic).  All pulse traces are
+    plotted in black with a thin line.  An optional grey dashed threshold
+    line is drawn per subplot.  Unused grid positions are hidden.
+
+    Parameters
+    ----------
+    rec : RetinalRecording
+        Must be an RHS recording (rec.source == 'rhs').
+    win_size_ms : float
+        Window length in ms to extract after each stim onset. Default: 10.
+    data_type : {'blanked', 'filtered', 'raw'}
+        Which data array to plot. Default: 'blanked'.
+    threshold : float | None
+        If provided, draw a horizontal grey dashed line at -threshold.
+    ylim : tuple[float, float]
+        Y-axis limits for every subplot. Default: (-1, 1).
+    save : bool
+        If True and output_folder is set, saves the figure to disk.
+    output_folder : str | None
+        Directory in which to save the figure. If None, shows interactively.
+    """
+    if rec.source != 'rhs':
+        raise ValueError("plot_spikes_layout_probe16 requires an RHS recording.")
+
+    from dataobj.channel_utils import _PROB16_LAYOUT
+
+    attr = _VIZ_DATA_ATTRS.get(data_type)
+    if attr is None:
+        raise ValueError(
+            f"data_type must be 'blanked', 'filtered', or 'raw'; got {data_type!r}"
+        )
+    data = getattr(rec, attr, None)
+    if data is None:
+        raise ValueError(f"rec.{attr} is None — run the appropriate preprocessing step first.")
+
+    sample_rate  = rec.sample_rate
+    stim_indices = rec.stim_indices
+    win_samples  = int(win_size_ms / 1000 * sample_rate)
+    xlim         = (0, win_size_ms)
+
+    # Build channel-name → (row, col) mapping via _PROB16_LAYOUT
+    # Channel names for RHS are stored as string real-channel numbers ('0', '26', …)
+    ch_to_loc: dict[str, tuple[int, int]] = {}
+    for ch_name in rec.channel_names:
+        try:
+            real_ch = int(ch_name)
+            loc = _PROB16_LAYOUT.get(real_ch)
+            if loc is not None:
+                ch_to_loc[ch_name] = loc
+        except ValueError:
+            pass
+
+    # Stimulation electrode position
+    stim_pos = None
+    if rec.stim_channel_name:
+        for ch_name in rec.channel_names:
+            if rec.stim_channel_name in ch_name:
+                stim_pos = ch_to_loc.get(ch_name)
+                break
+
+    grid_size = 9
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(12, 12))
+    plt.subplots_adjust(wspace=0.05, hspace=0.05)
+
+    used_positions: set[tuple[int, int]] = set()
+
+    for ch_idx, ch_name in enumerate(rec.channel_names):
+        loc = ch_to_loc.get(ch_name)
+        if loc is None:
+            continue
+        row, col = loc
+
+        used_positions.add((row, col))
+        ax      = axes[row, col]
+        ch_data = data[ch_idx, :]
+
+        for stim_idx in stim_indices:
+            start  = int(stim_idx)
+            end    = int(min(stim_idx + win_samples, len(ch_data)))
+            window = ch_data[start:end]
+            if len(window) == 0:
+                continue
+            times = np.arange(len(window)) / sample_rate * 1000
+            ax.plot(times, window, color='black', linewidth=0.2)
+
+        if threshold is not None:
+            ax.axhline(-threshold, color='grey', linewidth=0.5, linestyle='--')
+
+        # Channel label
+        ax.text(0.05, 0.95, ch_name, transform=ax.transAxes,
+                fontsize=6, va='top', ha='left', color='dimgrey')
+
+        # Red dot for stimulation electrode
+        if stim_pos is not None and (row, col) == stim_pos:
+            cx = (xlim[0] + xlim[1]) / 2
+            cy = (ylim[0] + ylim[1]) / 2
+            ax.plot(cx, cy, 'o', color='red', markersize=4, zorder=5)
+
+        for side, spine in ax.spines.items():
+            spine.set_visible(side in ('bottom', 'left'))
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # Hide unused subplots
+    for r in range(grid_size):
+        for c in range(grid_size):
+            if (r, c) not in used_positions:
+                axes[r, c].set_visible(False)
+
+    # Bottom-most right used subplot: add axis ticks with tiny font
+    if used_positions:
+        max_row = max(r for r, c in used_positions)
+        max_col = max(c for r, c in used_positions if r == max_row)
+        br_ax = axes[max_row, max_col]
+        x_ticks = [0, win_size_ms / 2, win_size_ms]
+        br_ax.set_xticks(x_ticks)
+        br_ax.set_xticklabels([f'{v:.0f}' for v in x_ticks], fontsize=6)
+        y_ticks = [ylim[0], (ylim[0] + ylim[1]) / 2, ylim[1]]
+        br_ax.set_yticks(y_ticks)
+        br_ax.set_yticklabels([f'{v:.0f}' for v in y_ticks], fontsize=6)
+        br_ax.tick_params(axis='both', length=2, pad=1)
+        br_ax.set_xlabel('ms', fontsize=6, labelpad=1)
+        br_ax.set_ylabel('mV', fontsize=6, labelpad=1)
+
+    data_label = data_type.capitalize()
+    plt.suptitle(f'{rec.file_name}  [Prob16 – {data_label}]', fontsize=9)
+
+    stim_handle = plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='red',
+                             markersize=4, label='Stimulation\nelectrode')
+    handles = [stim_handle]
+    if threshold is not None:
+        thresh_handle = plt.Line2D([0], [0], color='grey', linewidth=0.8,
+                                   linestyle='--', label='Threshold')
+        handles.append(thresh_handle)
+    fig.legend(handles=handles, loc='upper right',
+               fontsize='x-small', frameon=False, borderaxespad=1)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+
+    if save and output_folder:
+        fig.savefig(f'{output_folder}/spikes_layout_probe16_{data_type}.png', dpi=150)
         plt.close(fig)
     else:
         plt.show()
@@ -809,6 +973,28 @@ def plot_direct_response_summary(
         if not valid.empty else None
     )
 
+    # ── Stimulation electrode grid position ───────────────────────
+    stim_pos: tuple[int, int] | None = None
+    if rec.stim_channel_name:
+        for ch_idx, ch_name in enumerate(rec.channel_names):
+            if rec.stim_channel_name in ch_name:
+                loc = ch_to_loc.get(ch_name)
+                if loc is not None:
+                    stim_pos = loc
+                break
+
+    # ── Colour scale limits ───────────────────────────────────────
+    amp_max  = float(np.nanmax(grid_amp))  if np.any(~np.isnan(grid_amp))   else 1.0
+    lat_min  = float(np.nanmin(grid_lat))  if np.any(~np.isnan(grid_lat))   else 0.0
+    lat_max  = float(np.nanmax(grid_lat))  if np.any(~np.isnan(grid_lat))   else 1.0
+    dec_max  = float(np.nanmax(grid_decay)) if np.any(~np.isnan(grid_decay)) else 5.0
+
+    lat_vmin = int(np.floor(lat_min))
+    lat_vmax = int(np.ceil(lat_max))
+
+    import math
+    dec_vmax = math.ceil(dec_max / 5) * 5   # round up to nearest 5
+
     # ── Figure / GridSpec ─────────────────────────────────────────
     fig = plt.figure(figsize=(15, 9))
     gs  = GridSpec(2, 3, figure=fig, hspace=0.38, wspace=0.32)
@@ -821,19 +1007,25 @@ def plot_direct_response_summary(
 
     cmap = 'Purples'
 
-    def _heatmap(ax, grid, title, unit):
-        im = ax.imshow(grid, cmap=cmap, aspect='auto', origin='upper')
+    def _heatmap(ax, grid, title, unit, vmin, vmax):
+        im = ax.imshow(grid, cmap=cmap, aspect='auto', origin='upper',
+                       vmin=vmin, vmax=vmax)
         ax.set_title(title, fontsize=9, pad=4)
         ax.set_xticks([])
         ax.set_yticks([])
         cbar = plt.colorbar(im, ax=ax, shrink=0.85, pad=0.03)
         cbar.set_label(unit, fontsize=7)
         cbar.ax.tick_params(labelsize=6)
+        # Red dot at stimulation electrode
+        if stim_pos is not None:
+            r, c = stim_pos
+            ax.plot(c, r, 'o', color='red', markersize=5, zorder=5,
+                    markeredgewidth=0)
 
-    _heatmap(ax_amp,   grid_amp,   'Mean Amplitude',    'µV')
-    _heatmap(ax_lat,   grid_lat,   'Mean Latency',      'ms')
-    _heatmap(ax_wid,   grid_wid,   'Mean Width',        'ms')
-    _heatmap(ax_decay, grid_decay, 'Amplitude Decay  k', 'a.u.')
+    _heatmap(ax_amp,   grid_amp,   'Mean Amplitude', 'µV', vmin=0,       vmax=amp_max)
+    _heatmap(ax_lat,   grid_lat,   'Mean Latency',   'ms', vmin=lat_vmin, vmax=lat_vmax)
+    _heatmap(ax_wid,   grid_wid,   'Mean Width',     'ms', vmin=0.2,     vmax=1.0)
+    _heatmap(ax_decay, grid_decay, 'Amplitude Decay','%',  vmin=0,       vmax=dec_vmax)
 
     # ── Amplitude vs pulse — highest-decay channel ────────────────
     if highest_decay_ch is not None:
@@ -841,29 +1033,22 @@ def plot_direct_response_summary(
                       .sort_values('pulse_index'))
         pulse_nums = ch_df['pulse_index'].values
         amps       = ch_df['amplitude'].abs().values
-        k_val      = float(
+        pct_val    = float(
             ch_stats.loc[
                 ch_stats['channel'] == highest_decay_ch,
                 'amplitude_decay'
             ].values[0]
         )
-        a0 = float(amps[0]) if len(amps) > 0 and amps[0] > 0 else 1.0
-        x_fit = np.linspace(pulse_nums[0], pulse_nums[-1], 300)
-        y_fit = a0 * np.exp(-k_val * x_fit)
 
         ax_trace.scatter(pulse_nums, amps,
-                         color='#b39ddb', s=18, zorder=3,
-                         label='|Amplitude|')
-        ax_trace.plot(x_fit, y_fit,
-                      color='#6a1b9a', linewidth=1.5, linestyle='--',
-                      label=f'Exp fit  k = {k_val:.4f}')
+                         color='#b39ddb', s=18, zorder=3)
         ax_trace.set_xlabel('Pulse #', fontsize=9)
         ax_trace.set_ylabel('|Amplitude| (µV)', fontsize=9)
         ax_trace.set_title(
-            f'Amplitude decay — {highest_decay_ch}  (highest decay)',
+            f'Amplitude decay — {highest_decay_ch}  '
+            f'(highest decay: {pct_val:.1f}%)',
             fontsize=9,
         )
-        ax_trace.legend(fontsize=7, frameon=False)
         ax_trace.spines[['top', 'right']].set_visible(False)
     else:
         ax_trace.text(0.5, 0.5, 'No decay data available',

@@ -43,28 +43,28 @@ if __name__ == '__main__':
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     # ── MEA EDF ──────────────────────────────────────────────
-    print()
-    print('=' * 60)
-    print('MEA EDF')
-    print('=' * 60)
-    edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
-    edf_rec.filter()
-    edf_rec.blank(duration_ms=BLANK_MS, source='filtered_data')
-
-    edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=DIRECT_THRESHOLD_UV)
-    # plot_overlay_spikes(rec=edf_rec,
+    # print()
+    # print('=' * 60)
+    # print('MEA EDF')
+    # print('=' * 60)
+    # edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
+    # edf_rec.filter()
+    # edf_rec.blank(duration_ms=BLANK_MS, source='filtered_data')
+    #
+    # edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=DIRECT_THRESHOLD_UV)
+    # plot_spikes_layout_mea(rec=edf_rec,
     #                     win_size_ms=DIRECT_WIN_MS,
     #                     data_type = 'blanked',
     #                     threshold=DIRECT_THRESHOLD_UV,
     #                     output_folder=RESULTS_DIR)
-
-    plot_direct_response_summary(rec=edf_rec, output_folder=RESULTS_DIR)
-
-    edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS, threshold_std=INDIRECT_THRESH_STD)
-
+    #
+    # plot_direct_response_summary(rec=edf_rec, output_folder=RESULTS_DIR)
+    #
+    # edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS, threshold_std=INDIRECT_THRESH_STD)
+    #
     # edf_rec.detect_spontaneous(min_duration_ms=SPONT_MIN_DUR_MS, threshold_std=SPONT_THRESH_STD)
-
-    print(edf_rec)
+    #
+    # print(edf_rec)
 
 
     # ── Intan RHS ────────────────────────────────────────────
@@ -72,18 +72,22 @@ if __name__ == '__main__':
     print('Intan RHS')
     print('=' * 60)
     rhs_rec = load_rhs(RHS_FILE)
-    print(rhs_rec)
 
+    rhs_rec.blank(duration_ms=BLANK_MS, source='raw_data')
     rhs_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS,
+                                   data_type='blanked',
                                    threshold=DIRECT_THRESHOLD_UV)
-    print(rhs_rec.direct_response)
 
-    rhs_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS,
-                                     threshold_std=INDIRECT_THRESH_STD)
-    print(rhs_rec.indirect_response)
+    plot_spikes_layout_probe16(rec=rhs_rec,
+                               win_size_ms=DIRECT_WIN_MS,
+                               data_type='blanked',
+                               threshold=DIRECT_THRESHOLD_UV,
+                               output_folder=RESULTS_DIR)
+
+    # rhs_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS,
+    #                                  threshold_std=INDIRECT_THRESH_STD)
 
     # rhs_rec.detect_spontaneous(min_duration_ms=SPONT_MIN_DUR_MS,
     #                            threshold_std=SPONT_THRESH_STD)
-    # print(rhs_rec.spontaneous)
 
     print(rhs_rec)
