@@ -62,6 +62,9 @@ def run_direct_response(
 
     if rec.source == 'rhs':
         df = _run_rhs(rec, data_type, win_size_ms)
+        # RHS amplitudes are in µV — convert to mV to match EDF
+        if not df.empty:
+            df['amplitude_mV'] = df['amplitude_mV'] / 1000.0
     elif rec.source == 'edf':
         df = _run_edf(rec, win_size_ms, threshold)
     else:
@@ -70,9 +73,7 @@ def run_direct_response(
             "Expected 'rhs' or 'edf'."
         )
 
-    df = add_amplitude_decay(df)
-
-    return df
+    return add_amplitude_decay(df)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -134,11 +135,11 @@ def _run_threshold_detection(
             wid_ms     = _estimate_width(window, peak_local, rec.sample_rate)
 
             rows.append({
-                'channel':     ch_name,
-                'pulse_index': pulse_idx,
-                'amplitude':   amp,
-                'latency':     lat_ms,
-                'width':       wid_ms,
+                'channel':      ch_name,
+                'pulse_index':  pulse_idx,
+                'amplitude_mV': amp,
+                'latency_ms':   lat_ms,
+                'width_ms':     wid_ms,
             })
 
     return pd.DataFrame(rows) if rows else _empty_direct_df()
@@ -205,11 +206,11 @@ def _run_rhs_ica(rec, win_size_ms: float) -> pd.DataFrame:
 
             amp, lat_ms, wid_ms = spike
             rows.append({
-                'channel':     ch_name,
-                'pulse_index': pulse_idx,
-                'amplitude':   amp,
-                'latency':     lat_ms,
-                'width':       wid_ms,
+                'channel':      ch_name,
+                'pulse_index':  pulse_idx,
+                'amplitude_mV': amp,
+                'latency_ms':   lat_ms,
+                'width_ms':     wid_ms,
             })
 
     return pd.DataFrame(rows) if rows else _empty_direct_df()
@@ -397,8 +398,8 @@ def _estimate_width(
 
 def _empty_direct_df() -> pd.DataFrame:
     return pd.DataFrame(columns=[
-        'channel', 'pulse_index', 'amplitude', 'latency', 'width',
-        'amplitude_decay',
+        'channel', 'pulse_index', 'amplitude_mV', 'latency_ms', 'width_ms',
+        'amplitude_decay_pct',
     ])
 
 
@@ -430,11 +431,11 @@ def add_amplitude_decay(df: pd.DataFrame) -> pd.DataFrame:
         New DataFrame with an ``amplitude_decay`` column added.
     """
     df = df.copy()
-    df['amplitude_decay'] = np.nan
+    df['amplitude_decay_pct'] = np.nan
 
     for ch, group in df.groupby('channel'):
         sorted_group = group.sort_values('pulse_index')
-        y = np.abs(sorted_group['amplitude'].values)
+        y = np.abs(sorted_group['amplitude_mV'].values)
 
         if len(y) < 3:
             continue
@@ -445,6 +446,6 @@ def add_amplitude_decay(df: pd.DataFrame) -> pd.DataFrame:
 
         mean_last = np.mean(y[-3:])
         pct_decay = (1 - mean_last / mean_first) * 100
-        df.loc[sorted_group.index, 'amplitude_decay'] = pct_decay
+        df.loc[sorted_group.index, 'amplitude_decay_pct'] = pct_decay
 
     return df

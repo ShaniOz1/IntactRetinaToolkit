@@ -62,8 +62,9 @@ class RetinalRecording:
     ---------------------------------------------------
     direct_response : pd.DataFrame | None
         One row per detected direct spike. Columns:
-        channel, pulse_index, amplitude (µV), latency (ms), width (ms).
-        None until rec.detect_direct_response() is called.
+        channel, pulse_index, amplitude_mV, latency_ms, width_ms,
+        amplitude_decay_pct.  RHS amplitudes are converted from µV to mV
+        automatically.  None until rec.detect_direct_response() is called.
 
     indirect_response : pd.DataFrame | None
         One row per detected indirect spike. Columns:
