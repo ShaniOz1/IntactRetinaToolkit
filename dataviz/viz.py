@@ -1053,7 +1053,7 @@ def plot_direct_response_summary(
         pct_val    = float(
             ch_stats.loc[
                 ch_stats['channel'] == highest_decay_ch,
-                'amplitude_decay_pct'
+                'amplitude_decay'
             ].values[0]
         )
 
