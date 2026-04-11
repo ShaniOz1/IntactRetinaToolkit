@@ -37,7 +37,11 @@ from dataobj import load_rhs
 # ============================================================
 
 RHS_FILES: list[str] = [
-    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_1Hz_250528_092146\Ch05_300us_50us_7uA_1Hz_250528_092146.rhs'
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_1Hz_250528_092146\Ch05_300us_50us_7uA_1Hz_250528_092146.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_10Hz_250528_092403\Ch05_300us_50us_7uA_10Hz_250528_092403',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_1Hz_250528_113143\Ch01_300us_50us_7uA_1Hz_250528_113143.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_10Hz_250528_113243\Ch01_300us_50us_7uA_10Hz_250528_113243',
+
 
 ]
 
