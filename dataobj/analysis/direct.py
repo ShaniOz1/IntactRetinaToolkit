@@ -3,8 +3,9 @@ IntactRetinaToolkit.dataobj.analysis.direct
 =============================================
 Direct (stimulus-evoked) response detection.
 
-- RHS: ICA-based artifact removal → spike shape validation
-- EDF: threshold-based detection on blanked+filtered signal
+- RHS raw  : SALPA artifact suppression → threshold-based detection
+- RHS filt : ICA-based artifact removal → spike shape validation
+- EDF      : threshold-based detection on blanked+filtered signal
 
 Called via rec.detect_direct_response().
 Results stored in rec.direct_response as a DataFrame.
@@ -12,10 +13,279 @@ Results stored in rec.direct_response as a DataFrame.
 
 from __future__ import annotations
 import warnings
+from math import comb
 import numpy as np
 import pandas as pd
 import scipy.signal
 from sklearn.decomposition import FastICA
+
+
+# ─────────────────────────────────────────────────────────────
+# SALPA: Subtraction of Artifacts by Local Polynomial Approximation
+# Wagenaar & Potter, J. Neurosci. Methods 120 (2002) 113-120
+# ─────────────────────────────────────────────────────────────
+
+def salpa(
+    V,
+    N: int = 60,
+    d: int = 5,
+    b_squared: float = 5.0,
+    sat_low: float = -2048,
+    sat_high: float = 2047,
+) -> np.ndarray:
+    """
+    Remove stimulation artifacts via local cubic polynomial subtraction.
+
+    Parameters
+    ----------
+    V         : 1-D array of raw voltages (ADC counts or µV)
+    N         : window half-length in samples (paper default 75 → 3 ms at 25 kHz)
+    d         : deviation-check window width in samples (paper default d = N/10)
+    b_squared : noise-colour correction factor b² (paper reports b² ≈ 5)
+    sat_low   : ADC value indicating negative saturation (default: 12-bit)
+    sat_high  : ADC value indicating positive saturation (default: 12-bit)
+
+    Returns
+    -------
+    np.ndarray  Cleaned signal, same length as V. Saturated samples → 0.
+    """
+    V = np.asarray(V, dtype=float)
+    n = len(V)
+    v = np.zeros(n)
+
+    # ── S^{-1}: maps W_l → cubic polynomial coefficients a_k ──────────
+    def _build_S_inv(N):
+        j = np.arange(-N, N + 1, dtype=float)
+        T = np.array([np.sum(j ** k) for k in range(7)])
+        S = np.array([[T[k + l] for l in range(4)] for k in range(4)])
+        return np.linalg.inv(S)
+
+    S_inv = _build_S_inv(N)
+
+    # ── σ_V² via MAD (robust against large artifact excursions) ────────
+    mad = np.median(np.abs(V - np.median(V)))
+    sigma_V2 = (mad / 0.6745) ** 2
+    D2_threshold = 9.0 * b_squared * d * sigma_V2
+
+    # ── Helpers ─────────────────────────────────────────────────────────
+    def _compute_W_full(nc):
+        j = np.arange(-N, N + 1, dtype=float)
+        seg = V[nc - N: nc + N + 1]
+        return np.array([np.dot(j ** l, seg) for l in range(4)])
+
+    def _poly_val(a, offset):
+        return sum(a[k] * (offset ** k) for k in range(4))
+
+    def _advance_W(W, nc):
+        W_new = np.zeros(4)
+        for k in range(4):
+            acc = sum((-1) ** (k - l) * comb(k, l) * W[l] for l in range(k + 1))
+            acc += (N ** k) * V[nc + N + 1]
+            acc -= ((-N - 1) ** k) * V[nc - N]
+            W_new[k] = acc
+        return W_new
+
+    def _deviation(a, nc):
+        D = 0.0
+        for pos in range(nc + N - (d - 1), nc + N + 1):
+            if 0 <= pos < n:
+                D += V[pos] - _poly_val(a, pos - nc)
+        return D
+
+    # ── Main loop ───────────────────────────────────────────────────────
+    i = 0
+    while i < n:
+
+        # Saturation blanking
+        if V[i] == sat_low or V[i] == sat_high:
+            v[i] = 0
+            i += 1
+            continue
+
+        # Depeg phase — find first polynomial fit that passes deviation check
+        depeg_start = i
+        if depeg_start + N >= n:
+            v[depeg_start:] = V[depeg_start:]
+            break
+
+        nc = depeg_start + N
+        accepted = False
+
+        while nc + N < n:
+            W = _compute_W_full(nc)
+            a = S_inv @ W
+            D = _deviation(a, nc)
+
+            if D * D <= D2_threshold:
+                for pos in range(depeg_start, nc + 1):
+                    v[pos] = V[pos] - _poly_val(a, pos - nc)
+                i = nc + 1
+                accepted = True
+                break
+
+            nc += 1
+
+        if not accepted:
+            v[depeg_start:] = V[depeg_start:]
+            break
+
+        # Bulk phase — O(1) recursive window update per sample
+        W = _compute_W_full(nc)
+        bulk_nc = nc
+
+        while i < n:
+            if V[i] == sat_low or V[i] == sat_high:
+                break
+
+            if i - 1 + N + 1 >= n or i - 1 - N < 0:
+                v[i] = V[i]
+                i += 1
+                bulk_nc = i - 1
+                continue
+
+            W = _advance_W(W, bulk_nc)
+            bulk_nc = i
+            a = S_inv @ W
+            v[i] = V[i] - a[0]
+            i += 1
+
+    return v
+
+
+# ─────────────────────────────────────────────────────────────
+# Artifact suppression: threshold + polynomial breakaway
+# ─────────────────────────────────────────────────────────────
+
+def suppress_stim_artifact(
+    segment: np.ndarray,
+    mv_threshold: float = 1000.0,
+    N_fit: int = 5,
+    breakaway_thr: float = 2000.0,
+    plot: bool = False,
+) -> np.ndarray:
+    """
+    Detect and blank the stimulation artifact in a single pulse segment.
+
+    Algorithm
+    ---------
+    1. Find ``last_cross``: the last sample where |signal| >= mv_threshold.
+       Up to this point the signal is unambiguously artifact.
+    2. Fit a cubic polynomial to the ``N_fit`` samples that start at
+       ``last_cross``, modelling the smooth sub-threshold artifact tail.
+    3. Scan forward from ``last_cross``: the first sample whose residual
+       |signal − fit| exceeds ``breakaway_thr`` marks the end of the
+       artifact — the signal has broken away from the smooth decay.
+    4. Blank [0, artifact_end) with zeros and return the cleaned segment.
+
+    Parameters
+    ----------
+    segment       : 1-D raw signal for one pulse (µV for RHS data)
+    mv_threshold  : amplitude above which a sample is definitely artifact
+                    (µV; 5000.0 = 5 mV, appropriate for RHS ±6389 µV range)
+    N_fit         : samples used to fit the polynomial to the artifact tail
+    breakaway_thr : fixed residual (µV) above which the signal is considered
+                    to have broken away from the artifact curve
+    plot          : if True, show a diagnostic figure with two subplots:
+                    (top) raw segment + tail region + fitted curve;
+                    (bottom) residual vs sample with breakaway threshold.
+    """
+    import matplotlib.pyplot as plt
+
+    seg = np.asarray(segment, dtype=float)
+    n = len(seg)
+    samples = np.arange(n)
+
+    # ── Step 1: last above-threshold sample ───────────────────────────
+    crossings = np.where(np.abs(seg) >= mv_threshold)[0]
+    if len(crossings) == 0:
+        return seg.copy()              # no large artifact — return unchanged
+
+    last_cross = int(crossings[-1])
+
+    # ── Step 2: quadratic fit to N_fit samples starting at last_cross ──
+    fit_end = min(n, last_cross + N_fit)
+    fit_len = fit_end - last_cross
+    artifact_end = n                   # fallback: blank to end of segment
+
+    # Arrays for plotting — populated only if fit is possible
+    fit_x      = np.array([], dtype=float)   # sample indices of fit window
+    fit_curve  = np.array([], dtype=float)   # polynomial values over fit window
+    residuals  = np.full(n, np.nan)          # |signal − fit| for every sample
+
+    if fit_len >= 3:
+        x      = np.arange(fit_len, dtype=float)
+        y      = seg[last_cross:fit_end]
+        coeffs = np.polyfit(x, y, 2)
+
+        fit_x     = np.arange(last_cross, fit_end, dtype=float)
+        fit_curve = np.polyval(coeffs, x)
+
+        # ── Step 3: compute residuals for the full segment from last_cross,
+        # then find the first sample where the signal breaks away ─────────
+        for i in range(n - last_cross):
+            residuals[last_cross + i] = abs(
+                seg[last_cross + i] - np.polyval(coeffs, float(i))
+            )
+
+        crossings = np.where(residuals[last_cross:] > breakaway_thr)[0]
+        artifact_end = (last_cross + int(crossings[0])
+                        if len(crossings) > 0 else n)
+
+    # ── Step 4: blank artifact duration ──────────────────────────────
+    result = seg.copy()
+    result[:artifact_end] = 0.0
+
+    # ── Optional diagnostic plot ──────────────────────────────────────
+    if plot:
+        import matplotlib.gridspec as gridspec
+
+        fig = plt.figure(figsize=(10, 5))
+        gs  = gridspec.GridSpec(
+            2, 2,
+            width_ratios=[5, 1],
+            hspace=0.35, wspace=0.35,
+        )
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax2 = fig.add_subplot(gs[1, 0], sharex=ax1)
+        ax3 = fig.add_subplot(gs[:, 1])   # full height, right column
+
+        # Top-left: raw signal, tail region, fitted curve
+        ax1.plot(samples, seg, color='black', linewidth=0.8, label='raw segment')
+        if last_cross < n:
+            tail_end = min(last_cross + N_fit, n)
+            ax1.plot(
+                samples[last_cross:tail_end], seg[last_cross:tail_end],
+                color='purple', linewidth=1.2, label='tail region',
+            )
+        if len(fit_curve):
+            ax1.plot(fit_x, fit_curve, color='green', linewidth=1.4,
+                     linestyle='--', label='fitted curve')
+        ax1.axvline(artifact_end, color='red', linewidth=0.8,
+                    linestyle=':', label=f'artifact end ({artifact_end})')
+        ax1.set_ylabel('amplitude (µV)')
+        ax1.legend(fontsize=7, frameon=False)
+        ax1.set_title('Artifact suppression — signal')
+
+        # Bottom-left: residual vs sample + breakaway threshold
+        valid = ~np.isnan(residuals)
+        ax2.plot(samples[valid], residuals[valid], color='black',
+                 linewidth=0.8, label='|residual|')
+        ax2.axhline(breakaway_thr, color='red', linewidth=1.0,
+                    linestyle='--', label=f'breakaway thr ({breakaway_thr:.1f})')
+        ax2.set_ylabel('|signal − fit| (µV)')
+        ax2.set_xlabel('sample')
+        ax2.legend(fontsize=7, frameon=False)
+        ax2.set_title('Residual vs breakaway threshold')
+
+        # Right: cleaned signal (full figure height)
+        ax3.plot(samples, result, color='black', linewidth=0.5)
+        ax3.set_xlabel('sample')
+        ax3.set_ylabel('amplitude (µV)')
+        ax3.set_title('cleaned', fontsize=8)
+
+        plt.show()
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────
@@ -173,7 +443,7 @@ def _run_rhs(rec, data_type: str, win_size_ms: float) -> pd.DataFrame:
     elif data_type == 'filtered':
         return _run_rhs_ica(rec, win_size_ms)
     elif data_type == 'raw':
-        return _run_rhs_raw(rec, win_size_ms)
+        return _run_rhs_raw(rec)
     else:
         raise ValueError(
             f"data_type must be 'blanked', 'filtered', or 'raw'; got {data_type!r}"
@@ -216,11 +486,82 @@ def _run_rhs_ica(rec, win_size_ms: float) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else _empty_direct_df()
 
 
-def _run_rhs_raw(rec, win_size_ms: float) -> pd.DataFrame:
-    """RHS detection on raw data — implementation coming soon."""
-    raise NotImplementedError(
-        "_run_rhs_raw: detection on raw RHS data is not yet implemented."
-    )
+def _run_rhs_raw(
+    rec,
+    win_size_ms: float = 30,
+    threshold: float | None = None,
+    mv_threshold: float = 5000.0,
+    N_fit: int = 10,
+    breakaway_thr: float = 100.0,
+) -> pd.DataFrame:
+    """
+    RHS detection on raw data: artifact suppression per stim pulse → threshold detection.
+
+    For each channel and each stim pulse:
+      1. Extract the raw pulse window (stim onset → stim onset + win_size_ms).
+      2. Apply ``suppress_stim_artifact`` to blank the artifact duration:
+         find the last sample crossing ±mv_threshold, fit a cubic polynomial
+         to the sub-threshold tail, detect where the signal breaks away from
+         the fit, and zero everything up to that point.
+      3. Run threshold-based peak detection on the cleaned window.
+
+    Parameters
+    ----------
+    rec : RetinalRecording
+    win_size_ms : float
+    threshold : float or None
+        Detection threshold (µV). If None, computed per-channel from raw data.
+    mv_threshold : float
+        Amplitude (µV) above which a sample is unambiguously artifact.
+        Default 5000.0 µV = 5 mV, appropriate for RHS ±6389 µV data.
+    N_fit : int
+        Samples used to fit the polynomial to the artifact tail.
+    breakaway_thr : float
+        Fixed residual (µV) above which the signal is considered to have
+        broken away from the artifact curve.
+    """
+    window_samples = int(win_size_ms / 1000 * rec.sample_rate)
+    raw_data = _resolve_data(rec, 'raw')
+    stim_ch_name = rec.stim_channel_name
+    rows = []
+
+    for ch_idx, ch_name in enumerate(rec.channel_names):
+        if stim_ch_name and ch_name == stim_ch_name:
+            continue
+        ch_idx = 1
+        raw_ch = raw_data[ch_idx, :]
+        ch_threshold = (threshold if threshold is not None
+                        else _compute_threshold(
+                            raw_ch, rec.stim_indices, rec.sample_rate
+                        ))
+
+        for pulse_idx, stim_idx in enumerate(rec.stim_indices):
+            start = int(stim_idx)
+            end   = int(min(stim_idx + window_samples, len(raw_ch)))
+            if start >= end:
+                continue
+
+            segment = raw_ch[start:end]
+            window  = suppress_stim_artifact(segment)
+
+
+            if len(window) == 0 or abs(window.min()) < ch_threshold:
+                continue
+
+            peak_local = int(np.argmin(window))
+            amp        = float(window[peak_local])
+            lat_ms     = peak_local / rec.sample_rate * 1000
+            wid_ms     = _estimate_width(window, peak_local, rec.sample_rate)
+
+            rows.append({
+                'channel':      ch_name,
+                'pulse_index':  pulse_idx,
+                'amplitude_mV': amp,
+                'latency_ms':   lat_ms,
+                'width_ms':     wid_ms,
+            })
+
+    return pd.DataFrame(rows) if rows else _empty_direct_df()
 
 
 # ─────────────────────────────────────────────────────────────

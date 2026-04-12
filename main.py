@@ -18,10 +18,10 @@ RESULTS_DIR = 'Results'
 #  PARAMS
 # ============================================================
 
-RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\For figures\Stim with MEA\New folder\ChE11_20uA_300us_50us_1Hz_250309_172137.rhs'
-RHS_FILE2           = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\Ch27_7uA_300us_50us_1Hz_256pulses_250309_190326.rhs'
-EDF_FILE            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\For figures\Stim with MEA\New folder\id1 ChE11_20uA_300us_50us_1Hz_100pulsesB-00071.edf'
-EDF_STIM_ELECTRODE  = 'E11'
+RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_1Hz_250528_092146\Ch05_300us_50us_7uA_1Hz_250528_092146.rhs'
+# RHS_FILE2           = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\Ch27_7uA_300us_50us_1Hz_256pulses_250309_190326.rhs'
+EDF_FILE            = r'C:\Shani\MEA mini1200\2025.11.02 e14_Shani\Retina2\phase1-normal\2025-11-02T10-56-11J6_7uA_300us_60us_1Hz_100pulses.edf'
+EDF_STIM_ELECTRODE  = 'J6'
 
 # --- Direct response ---
 DIRECT_WIN_MS       = 10.0
@@ -56,16 +56,16 @@ if __name__ == '__main__':
     # edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=DIRECT_THRESHOLD_MV)
     # plot_spikes_layout_mea(rec=edf_rec,
     #                     win_size_ms=DIRECT_WIN_MS,
-    #                     data_type = 'blanked',
+    #                     data_type = 'raw',
     #                     threshold=DIRECT_THRESHOLD_MV,
     #                     output_folder=RESULTS_DIR)
-
+    #
     # plot_direct_response_summary(rec=edf_rec, output_folder=RESULTS_DIR)
-
+    #
     # edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS, threshold_std=INDIRECT_THRESH_STD)
-
+    #
     # edf_rec.detect_spontaneous(min_duration_ms=SPONT_MIN_DUR_MS, threshold_std=SPONT_THRESH_STD)
-
+    #
     # print(edf_rec)
 
 
@@ -75,10 +75,10 @@ if __name__ == '__main__':
     print('=' * 60)
     rhs_rec1 = load_rhs(RHS_FILE1, stim_threshold=470)
 
-    rhs_rec1.blank(duration_ms=BLANK_MS, source='raw_data')
+    # rhs_rec1.blank(duration_ms=BLANK_MS, source='raw_data')
     rhs_rec1.detect_direct_response(win_size_ms=10,
                                    threshold=15,
-                                   data_type='blanked')
+                                   data_type='raw')
 
     plot_spikes_layout_probe16(rec=rhs_rec1,
                                win_size_ms=20,

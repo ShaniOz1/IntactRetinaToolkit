@@ -31,6 +31,7 @@ import numpy as np
 from matplotlib.widgets import Button
 
 from dataobj import load_rhs
+from dataobj.analysis.direct import run_direct_response
 
 # ============================================================
 #  PARAMS — fill in the actual paths before running
@@ -40,7 +41,13 @@ RHS_FILES: list[str] = [
     r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_1Hz_250528_092146\Ch05_300us_50us_7uA_1Hz_250528_092146.rhs',
     r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_10Hz_250528_092403\Ch05_300us_50us_7uA_10Hz_250528_092403',
     r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_1Hz_250528_113143\Ch01_300us_50us_7uA_1Hz_250528_113143.rhs',
-    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_10Hz_250528_113243\Ch01_300us_50us_7uA_10Hz_250528_113243',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_10Hz_250528_113243\Ch01_300us_50us_7uA_10Hz_250528_113243.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch04_300us_50us_7uA_1Hz_250528_112207\Ch04_300us_50us_7uA_1Hz_250528_112207.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch04_300us_50us_6uA_1Hz_250528_112626\Ch04_300us_50us_6uA_1Hz_250528_112626.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch04_300us_50us_3uA_1Hz_250528_112819\Ch04_300us_50us_3uA_1Hz_250528_112819.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina4\Ch05_300us_50us_7uA_1Hz_250528_135729\Ch05_300us_50us_7uA_1Hz_250528_135729.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina5\Ch04_300us_50us_7uA_1Hz_250528_142150\Ch04_300us_50us_7uA_1Hz_250528_142150.rhs',
+    r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina1\7uA\Ch04_300us_50us_1Hz_250525_095035\Ch04_300us_50us_1Hz_250525_095135.rhs'
 
 
 ]
@@ -317,6 +324,18 @@ if __name__ == '__main__':
 
         print(f'  Channels : {len(rec.channel_names)}')
         print(f'  Pulses   : {len(stim_indices)}')
+
+        # ── SALPA-based direct response detection ─────────────────────
+        print('  Running SALPA artifact suppression + threshold detection...')
+        df_direct = run_direct_response(rec, data_type='raw',
+                                        win_size_ms=WIN_SIZE_MS)
+        if df_direct.empty:
+            print('  Direct responses: none detected')
+        else:
+            print(f'  Direct responses: {len(df_direct)} event(s) across '
+                  f'{df_direct["channel"].nunique()} channel(s)')
+            print(df_direct.to_string(index=False))
+        # ─────────────────────────────────────────────────────────────
 
         for ch_idx, ch_name in enumerate(rec.channel_names):
             if ch_name == rec.stim_channel_name:
