@@ -17,6 +17,7 @@ from math import comb
 import numpy as np
 import pandas as pd
 import scipy.signal
+from scipy.optimize import curve_fit
 from sklearn.decomposition import FastICA
 
 
@@ -158,9 +159,9 @@ def salpa(
 
 def suppress_stim_artifact(
     segment: np.ndarray,
-    mv_threshold: float = 1000.0,
+    mv_threshold: float = 3000.0,
     N_fit: int = 5,
-    breakaway_thr: float = 2000.0,
+    breakaway_thr: float = 500.0,
     plot: bool = False,
 ) -> np.ndarray:
     """
@@ -202,34 +203,57 @@ def suppress_stim_artifact(
 
     last_cross = int(crossings[-1])
 
-    # ── Step 2: quadratic fit to N_fit samples starting at last_cross ──
+    # ── Step 2: exponential fit to N_fit samples starting at last_cross ─
+    # Model: f(x) = a · exp(b · x) + c
+    # b < 0 → decaying tail, b > 0 → rising tail; both are tried and the
+    # better fit (lower residual sum-of-squares) is kept.
     fit_end = min(n, last_cross + N_fit)
     fit_len = fit_end - last_cross
     artifact_end = n                   # fallback: blank to end of segment
 
     # Arrays for plotting — populated only if fit is possible
-    fit_x      = np.array([], dtype=float)   # sample indices of fit window
-    fit_curve  = np.array([], dtype=float)   # polynomial values over fit window
-    residuals  = np.full(n, np.nan)          # |signal − fit| for every sample
+    fit_x      = np.array([], dtype=float)
+    fit_curve  = np.array([], dtype=float)
+    residuals  = np.full(n, np.nan)
+
+    def _exp_model(x, a, b, c):
+        return a * np.exp(b * x) + c
 
     if fit_len >= 3:
-        x      = np.arange(fit_len, dtype=float)
-        y      = seg[last_cross:fit_end]
-        coeffs = np.polyfit(x, y, 2)
+        x = np.arange(fit_len, dtype=float)
+        y = seg[last_cross:fit_end]
+        c0 = float(y[-1])
+        a0 = float(y[0]) - c0
 
-        fit_x     = np.arange(last_cross, fit_end, dtype=float)
-        fit_curve = np.polyval(coeffs, x)
+        best_params = None
+        best_sse    = np.inf
+        for b0 in (-1.0 / max(fit_len, 1), 1.0 / max(fit_len, 1)):
+            try:
+                popt, _ = curve_fit(
+                    _exp_model, x, y,
+                    p0=[a0, b0, c0],
+                    maxfev=2000,
+                )
+                sse = float(np.sum((_exp_model(x, *popt) - y) ** 2))
+                if sse < best_sse:
+                    best_sse    = sse
+                    best_params = popt
+            except Exception:
+                pass
 
-        # ── Step 3: compute residuals for the full segment from last_cross,
-        # then find the first sample where the signal breaks away ─────────
-        for i in range(n - last_cross):
-            residuals[last_cross + i] = abs(
-                seg[last_cross + i] - np.polyval(coeffs, float(i))
+        if best_params is not None:
+            x_full    = np.arange(n - last_cross, dtype=float)
+            fit_x     = np.arange(last_cross, n, dtype=float)
+            fit_curve = _exp_model(x_full, *best_params)
+
+            # ── Step 3: residuals over full segment from last_cross ───────
+            residuals[last_cross:] = np.abs(
+                seg[last_cross:] - _exp_model(x_full, *best_params)
             )
 
-        crossings = np.where(residuals[last_cross:] > breakaway_thr)[0]
-        artifact_end = (last_cross + int(crossings[0])
-                        if len(crossings) > 0 else n)
+            crossings = np.where(residuals[last_cross:] > breakaway_thr)[0]
+            artifact_end = (last_cross + int(crossings[0])
+                            if len(crossings) > 0 else n)
 
     # ── Step 4: blank artifact duration ──────────────────────────────
     result = seg.copy()
@@ -249,38 +273,43 @@ def suppress_stim_artifact(
         ax2 = fig.add_subplot(gs[1, 0], sharex=ax1)
         ax3 = fig.add_subplot(gs[:, 1])   # full height, right column
 
+        uv2mv = 1e-3   # convert µV → mV for all plots
+
         # Top-left: raw signal, tail region, fitted curve
-        ax1.plot(samples, seg, color='black', linewidth=0.8, label='raw segment')
+        ax1.plot(samples, seg * uv2mv, color='black', linewidth=0.8, label='raw segment')
         if last_cross < n:
             tail_end = min(last_cross + N_fit, n)
             ax1.plot(
-                samples[last_cross:tail_end], seg[last_cross:tail_end],
+                samples[last_cross:tail_end], seg[last_cross:tail_end] * uv2mv,
                 color='purple', linewidth=1.2, label='tail region',
             )
         if len(fit_curve):
-            ax1.plot(fit_x, fit_curve, color='green', linewidth=1.4,
+            ax1.plot(fit_x, fit_curve * uv2mv, color='green', linewidth=1.4,
                      linestyle='--', label='fitted curve')
         ax1.axvline(artifact_end, color='red', linewidth=0.8,
                     linestyle=':', label=f'artifact end ({artifact_end})')
-        ax1.set_ylabel('amplitude (µV)')
+        ax1.set_ylabel('amplitude (mV)')
+        ax1.set_ylim(-7, 7)
         ax1.legend(fontsize=7, frameon=False)
         ax1.set_title('Artifact suppression — signal')
 
         # Bottom-left: residual vs sample + breakaway threshold
         valid = ~np.isnan(residuals)
-        ax2.plot(samples[valid], residuals[valid], color='black',
+        ax2.plot(samples[valid], residuals[valid] * uv2mv, color='black',
                  linewidth=0.8, label='|residual|')
-        ax2.axhline(breakaway_thr, color='red', linewidth=1.0,
-                    linestyle='--', label=f'breakaway thr ({breakaway_thr:.1f})')
-        ax2.set_ylabel('|signal − fit| (µV)')
+        ax2.axhline(breakaway_thr * uv2mv, color='red', linewidth=1.0,
+                    linestyle='--',
+                    label=f'breakaway thr ({breakaway_thr * uv2mv:.3f} mV)')
+        ax2.set_ylabel('|signal − fit| (mV)')
         ax2.set_xlabel('sample')
+        ax2.set_ylim(-7, 7)
         ax2.legend(fontsize=7, frameon=False)
         ax2.set_title('Residual vs breakaway threshold')
 
         # Right: cleaned signal (full figure height)
-        ax3.plot(samples, result, color='black', linewidth=0.5)
+        ax3.plot(samples, result * uv2mv, color='black', linewidth=0.5)
         ax3.set_xlabel('sample')
-        ax3.set_ylabel('amplitude (µV)')
+        ax3.set_ylabel('amplitude (mV)')
         ax3.set_title('cleaned', fontsize=8)
 
         plt.show()
@@ -490,19 +519,14 @@ def _run_rhs_raw(
     rec,
     win_size_ms: float = 30,
     threshold: float | None = None,
-    mv_threshold: float = 5000.0,
-    N_fit: int = 10,
-    breakaway_thr: float = 100.0,
 ) -> pd.DataFrame:
     """
     RHS detection on raw data: artifact suppression per stim pulse → threshold detection.
 
     For each channel and each stim pulse:
       1. Extract the raw pulse window (stim onset → stim onset + win_size_ms).
-      2. Apply ``suppress_stim_artifact`` to blank the artifact duration:
-         find the last sample crossing ±mv_threshold, fit a cubic polynomial
-         to the sub-threshold tail, detect where the signal breaks away from
-         the fit, and zero everything up to that point.
+      2. Apply ``suppress_stim_artifact`` with its default parameters to blank
+         the artifact duration.
       3. Run threshold-based peak detection on the cleaned window.
 
     Parameters
@@ -511,14 +535,6 @@ def _run_rhs_raw(
     win_size_ms : float
     threshold : float or None
         Detection threshold (µV). If None, computed per-channel from raw data.
-    mv_threshold : float
-        Amplitude (µV) above which a sample is unambiguously artifact.
-        Default 5000.0 µV = 5 mV, appropriate for RHS ±6389 µV data.
-    N_fit : int
-        Samples used to fit the polynomial to the artifact tail.
-    breakaway_thr : float
-        Fixed residual (µV) above which the signal is considered to have
-        broken away from the artifact curve.
     """
     window_samples = int(win_size_ms / 1000 * rec.sample_rate)
     raw_data = _resolve_data(rec, 'raw')
@@ -528,7 +544,7 @@ def _run_rhs_raw(
     for ch_idx, ch_name in enumerate(rec.channel_names):
         if stim_ch_name and ch_name == stim_ch_name:
             continue
-        ch_idx = 1
+        ch_idx = 8
         raw_ch = raw_data[ch_idx, :]
         ch_threshold = (threshold if threshold is not None
                         else _compute_threshold(
