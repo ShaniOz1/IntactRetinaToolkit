@@ -95,6 +95,7 @@ class RetinalRecording:
     stim_data: Optional[np.ndarray]
     stim_current: Optional[float]
     stim_channel_name: Optional[str]
+    stim_phase_duration_us: Optional[float] = None
 
     # --- Metadata ---
     metadata: dict = field(default_factory=dict)

@@ -62,15 +62,17 @@ def load_rhs(
     stim_data = None
     stim_current = None
     stim_channel_name = None
+    stim_phase_duration_us = None
 
     try:
-        stim_obj          = file.stimulation[0]
-        stim_data         = stim_obj.signal
-        stim_ch_idx       = stim_obj.channels
-        stim_channel_name = (channel_names[stim_ch_idx]
-                             if stim_ch_idx < len(channel_names) else None)
-        stim_current          = float(stim_obj.current_levels.max())
-        stim_indices          = _detect_stim_indices(stim_data)
+        stim_obj               = file.stimulation[0]
+        stim_data              = stim_obj.signal
+        stim_ch_idx            = stim_obj.channels
+        stim_channel_name      = (channel_names[stim_ch_idx]
+                                  if stim_ch_idx < len(channel_names) else None)
+        stim_current           = float(stim_obj.current_levels.max())
+        stim_phase_duration_us = _measure_phase_duration_us(stim_data, stim_current, sample_rate)
+        stim_indices           = _detect_stim_indices(stim_data)
     except Exception:
         warnings.warn(
             "No stimulation data detected in the .rhs file — "
@@ -104,6 +106,7 @@ def load_rhs(
         stim_data=stim_data,
         stim_current=stim_current,
         stim_channel_name=stim_channel_name,
+        stim_phase_duration_us=stim_phase_duration_us,
         metadata={
             'start_time': start_time,
             'n_channels': recording_data.shape[0],
@@ -113,6 +116,38 @@ def load_rhs(
 
 
 # ── internal ────────────────────────────────────────────────────────────────
+
+def _measure_phase_duration_us(
+    stim_data: np.ndarray,
+    stim_current: float,
+    sample_rate: int,
+) -> float:
+    """
+    Measure the duration of the first stimulus phase in microseconds.
+
+    Finds the first downward crossing of -0.5 * |stim_current| in stim_data
+    and the subsequent upward crossing of the same level.  The number of
+    samples between the two crossings is converted to µs.
+    Returns nan if fewer than two crossings are found.
+    """
+    threshold = -0.5 * abs(stim_current)
+    below = stim_data < threshold
+    diff  = np.diff(below.astype(int))
+
+    down = np.where(diff ==  1)[0]   # False → True  (signal crosses downward)
+    up   = np.where(diff == -1)[0]   # True  → False (signal crosses upward)
+
+    if len(down) == 0 or len(up) == 0:
+        return float('nan')
+
+    first_down = down[0]
+    up_after   = up[up > first_down]
+    if len(up_after) == 0:
+        return float('nan')
+
+    n_samples = int(up_after[0] - first_down)
+    return n_samples / sample_rate * 1_000_000.0
+
 
 def _detect_stim_indices(stim_signal: np.ndarray) -> np.ndarray:
     """

@@ -160,7 +160,7 @@ def salpa(
 def suppress_stim_artifact(
     segment: np.ndarray,
     mv_threshold: float = 3000.0,
-    N_fit: int = 5,
+    N_fit: int = 10,
     breakaway_thr: float = 300.0,
     plot: bool = False,
     sample_rate: int = 20000,
@@ -276,23 +276,25 @@ def suppress_stim_artifact(
         artifact_end_ms = artifact_end / sample_rate * 1000.0
 
         # Top-left: raw signal, tail region, fitted curve
-        ax1.plot(ms_axis, seg * uv2mv, color='black', linewidth=0.8, label='raw segment')
+        ax1.plot(ms_axis, seg * uv2mv, color='grey', linewidth=0.8, label='raw segment')
         if last_cross < n:
             tail_end = min(last_cross + N_fit, n)
             ax1.plot(
                 ms_axis[last_cross:tail_end], seg[last_cross:tail_end] * uv2mv,
-                color='purple', linewidth=1.2, label='tail region',
+                color='purple', linewidth=2.0, label='tail region',
             )
         if len(fit_curve):
             ax1.plot(fit_x / sample_rate * 1000.0, fit_curve * uv2mv, color='green',
-                     linewidth=1.4, linestyle='--', label='fitted curve')
+                     linewidth=5.0, alpha=0.35, label='fitted curve')
         ax1.axvline(artifact_end_ms, color='red', linewidth=0.8,
                     linestyle=':', label=f'artifact end ({artifact_end_ms:.2f} ms)')
-        ax1.set_xlim(0, 10)
+        ax1.set_xlim(0, 1.2)
         ax1.set_ylabel('amplitude (mV)')
         ax1.set_ylim(-7, 7)
         ax1.legend(fontsize=7, frameon=False)
-        ax1.set_title('Artifact suppression — signal')
+        ax1.set_title('Artifact suppression — signal', fontsize=7)
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
 
         # Bottom-left: residual vs sample + breakaway threshold
         valid = ~np.isnan(residuals)
@@ -303,16 +305,21 @@ def suppress_stim_artifact(
                     label=f'breakaway thr ({breakaway_thr * uv2mv:.3f} mV)')
         ax2.set_ylabel('|signal − fit| (mV)')
         ax2.set_xlabel('time (ms)')
+        ax2.set_xlim(0, 5)
         ax2.set_ylim(-7, 7)
         ax2.legend(fontsize=7, frameon=False)
-        ax2.set_title('Residual vs breakaway threshold')
+        ax2.set_title('Residual vs breakaway threshold', fontsize=7)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
 
         # Right: cleaned signal, clipped to 10 ms
         ax3.plot(ms_axis, result * uv2mv, color='black', linewidth=0.5)
         ax3.set_xlim(0, 20)
         ax3.set_xlabel('time (ms)')
         ax3.set_ylabel('amplitude (mV)')
-        ax3.set_title('cleaned', fontsize=8)
+        ax3.set_title('cleaned', fontsize=7)
+        ax3.spines['top'].set_visible(False)
+        ax3.spines['right'].set_visible(False)
 
         plt.show()
 
@@ -651,10 +658,9 @@ def _run_rhs_raw(
     rec,
     win_size_ms: float = 30,
     threshold: float | None = None,
-    duration_us: float = 300,
     interphase_us: float = 50,
     negative_first: bool = True,
-    artifact_match_threshold: float = 0.65,
+    artifact_match_threshold: float = 0.9,
     charge_balance_thr: float = 0.3,
     plot: bool = True,
 ) -> pd.DataFrame:
@@ -691,6 +697,8 @@ def _run_rhs_raw(
     """
     import matplotlib.pyplot as plt
 
+    duration_us = rec.stim_phase_duration_us
+
     window_samples = int(win_size_ms / 1000 * rec.sample_rate)
     ph_samples   = max(1, int(round(duration_us   / 1_000_000.0 * rec.sample_rate)))
     gap_samples  = max(0, int(round(interphase_us / 1_000_000.0 * rec.sample_rate)))
@@ -702,10 +710,13 @@ def _run_rhs_raw(
     rows = []
     all_channel_windows: dict[str, list] = {}  # ch_name → [window, ...]
 
+    min_lat_samp = int(2.0  * rec.sample_rate / 1000)   # 1.5 ms in samples
+    max_wid_samp = int(5.0  * rec.sample_rate / 1000)   # 5 ms in samples
+
     for ch_idx, ch_name in enumerate(rec.channel_names):
         if stim_ch_name and ch_name == stim_ch_name:
             continue
-        # ch_idx = 10
+        # ch_idx = 11
         raw_ch = raw_data[ch_idx, :]
         ch_threshold = (threshold if threshold is not None
                         else _compute_threshold(
@@ -733,29 +744,55 @@ def _run_rhs_raw(
                 match_threshold=artifact_match_threshold,
                 charge_balance_thr=charge_balance_thr,
             )
-            if not artifact_valid:
-                continue
 
             window = suppress_stim_artifact(segment, sample_rate=rec.sample_rate)
 
-            if plot:
-                all_channel_windows[ch_name].append((window, corr, segment[:template_len], imbalance))
+            spike_valid = False
+            peak_local  = -1
+            amp = lat_ms = wid_ms = float('nan')
+            if artifact_valid and len(window) > 2:
+                dv  = np.diff(window)
+                d2v = np.diff(window, n=2)
 
-            if len(window) == 0 or abs(window.min()) < ch_threshold:
+                # Indices where first derivative crosses zero negative→positive (valleys)
+                valley_idx = np.where((dv[:-1] < 0) & (dv[1:] >= 0))[0] + 1
+                # Restrict to allowed latency window and confirm with second derivative
+                valley_idx = [
+                    i for i in valley_idx
+                    if i >= min_lat_samp and (i - 1) < len(d2v) and d2v[i - 1] > 0
+                ]
+
+                if valley_idx:
+                    # Pick the deepest valley
+                    peak_local = int(min(valley_idx, key=lambda i: window[i]))
+                    amp    = float(window[peak_local])
+                    lat_ms = peak_local / rec.sample_rate * 1000
+                    wid_ms = _estimate_width(window, peak_local, rec.sample_rate)
+                    try:
+                        _ww      = scipy.signal.peak_widths(-window, [peak_local], rel_height=0.5)
+                        wid_samp = int(_ww[3][0] - _ww[2][0])
+                    except Exception:
+                        wid_samp = max_wid_samp + 1
+                    spike_valid = (
+                        amp < -20.0                 # < -0.02 mV (µV units)
+                        and wid_samp < max_wid_samp # width < 5 ms
+                    )
+
+            if plot:
+                stored_peak = peak_local if spike_valid else -1
+                all_channel_windows[ch_name].append((window, corr, segment[:template_len], imbalance, artifact_valid, spike_valid, stored_peak))
+
+            if not artifact_valid:
                 continue
 
-            peak_local = int(np.argmin(window))
-            amp        = float(window[peak_local])
-            lat_ms     = peak_local / rec.sample_rate * 1000
-            wid_ms     = _estimate_width(window, peak_local, rec.sample_rate)
-
-            rows.append({
-                'channel':      ch_name,
-                'pulse_index':  pulse_idx,
-                'amplitude_mV': amp,
-                'latency_ms':   lat_ms,
-                'width_ms':     wid_ms,
-            })
+            if spike_valid:
+                rows.append({
+                    'channel':      ch_name,
+                    'pulse_index':  pulse_idx,
+                    'amplitude_mV': amp,
+                    'latency_ms':   lat_ms,
+                    'width_ms':     wid_ms,
+                })
 
     # ── One figure for the entire file: one subplot per channel ──────────
     if plot and all_channel_windows:
@@ -767,7 +804,7 @@ def _run_rhs_raw(
 
         fig, axes = plt.subplots(
             n_rows, n_cols,
-            figsize=(n_cols * 1.8, n_rows * 1.8),
+            figsize=(n_cols * 1.5, n_rows * 2.5),
             squeeze=False,
         )
         fig.suptitle(rec.file_name, fontsize=9)
@@ -775,10 +812,41 @@ def _run_rhs_raw(
         for ax_i, ch in enumerate(ch_names_plot):
             ax = axes[ax_i // n_cols][ax_i % n_cols]
             corrs = []
-            for win, corr, _, __ in all_channel_windows[ch]:
+            windows_list = []
+            peak_locals  = []
+            for win, corr, _, __, artifact_ok, spike_ok, pk in all_channel_windows[ch]:
+                if not artifact_ok:
+                    color = 'red'
+                elif not spike_ok:
+                    color = 'grey'
+                else:
+                    color = 'black'
                 ax.plot(ms_axis[:len(win)], win * 1e-3,
-                        color='black', linewidth=0.4, alpha=0.3)
+                        color=color, linewidth=0.4, alpha=0.3)
                 corrs.append(corr)
+                if spike_ok:
+                    windows_list.append(win)
+                    peak_locals.append(pk)
+
+            if windows_list:
+                min_len     = min(len(w) for w in windows_list)
+                avg_win     = np.mean([w[:min_len] for w in windows_list], axis=0)
+                avg_ms      = ms_axis[:min_len]
+                peak_idx    = int(round(np.mean(peak_locals)))
+                peak_idx    = min(peak_idx, len(avg_win) - 1)
+                avg_lat_ms  = float(np.mean(peak_locals)) / rec.sample_rate * 1000
+                peak_amp_mv = float(avg_win[peak_idx]) * 1e-3
+                peak_wid    = _estimate_width(avg_win, peak_idx, rec.sample_rate)
+
+                ax.plot(avg_ms, avg_win * 1e-3, color='steelblue', linewidth=1.0, alpha=0.9)
+                ax.plot(avg_lat_ms, peak_amp_mv, 'v', color='red', markersize=3, zorder=5)
+                ax.annotate(
+                    f'{peak_amp_mv:.2f} mV\nlat={avg_lat_ms:.2f} ms\nwid={peak_wid:.2f} ms',
+                    xy=(avg_lat_ms, peak_amp_mv),
+                    xytext=(3, -6), textcoords='offset points',
+                    fontsize=4, color='red',
+                )
+
             ax.set_xlim(0, 20)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
@@ -804,9 +872,10 @@ def _run_rhs_raw(
             ax = axes2[ax_i // n_cols][ax_i % n_cols]
             corrs = []
             imbs  = []
-            for _, corr, art, imb in all_channel_windows[ch]:
+            for _, corr, art, imb, valid, _spike_ok, _pk in all_channel_windows[ch]:
+                color = 'steelblue' if valid else 'red'
                 ax.plot(art_axis[:len(art)], art * 1e-3,
-                        color='steelblue', linewidth=0.4, alpha=0.3)
+                        color=color, linewidth=0.4, alpha=0.3)
                 corrs.append(corr)
                 imbs.append(imb)
             ax.set_xlim(0, art_axis[-1])
@@ -991,10 +1060,16 @@ def _estimate_width(
     sample_rate: int,
 ) -> float:
     """Estimate spike width at half-maximum in ms."""
+    import warnings
     try:
         inv = -window
-        widths = scipy.signal.peak_widths(inv, [peak_local], rel_height=0.5)
-        return float((widths[3][0] - widths[2][0]) / sample_rate * 1000)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', scipy.signal.PeakPropertyWarning)
+            widths = scipy.signal.peak_widths(inv, [peak_local], rel_height=0.5)
+        w = float(widths[3][0] - widths[2][0])
+        if w == 0:
+            return float('nan')
+        return w / sample_rate * 1000
     except Exception:
         return float('nan')
 

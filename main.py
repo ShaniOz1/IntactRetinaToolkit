@@ -19,11 +19,19 @@ RESULTS_DIR = 'Results'
 # ============================================================
 # With retina and response:
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_1Hz_250528_092146\Ch05_300us_50us_7uA_1Hz_250528_092146.rhs'
-RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_1Hz_250528_113143\Ch01_300us_50us_7uA_1Hz_250528_113143.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_1Hz_250528_113143\Ch01_300us_50us_7uA_1Hz_250528_113143.rhs'
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina4\Ch04_300us_50us_7uA_1Hz_250525_131107\Ch04_300us_50us_7uA_1Hz_250525_131107.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch04_300us_50us_6uA_1Hz_250528_112626\Ch04_300us_50us_6uA_1Hz_250528_112626.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch04_300us_50us_7uA_1Hz_250528_112207\Ch04_300us_50us_7uA_1Hz_250528_112207.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch04_300us_50us_7uA_1Hz_250528_121450\Ch04_300us_50us_7uA_1Hz_250528_121450.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina5\Ch04_300us_50us_7uA_1Hz_250528_142150\Ch04_300us_50us_7uA_1Hz_250528_142150.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina1\7uA\Ch04_300us_50us_1Hz_250525_095035\Ch04_300us_50us_1Hz_250525_095135.rhs'
 #
 # No retina:
-# RHS_FILE1            = r'S:\shani_data\Intact\2025.11.26 E14\No retina\Ch26_300us_50us_7uA_1Hz_251126_111928\Ch26_300us_50us_7uA_1Hz_251126_111928.rhs'
+RHS_FILE1            = r'S:\shani_data\Intact\2025.11.26 E14\No retina\Ch26_300us_50us_7uA_1Hz_251126_111928\Ch26_300us_50us_7uA_1Hz_251126_111928.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.11.18 No retina\Stim_ch04\1Hz_251118_160301\1Hz_251118_160301.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.11.18 No retina\Stim_ch01\1Hz_251118_161942\1Hz_251118_161942.rhs'
+# RHS_FILE1            = r'S:\shani_data\Intact\2025.11.26 E14\No retina\Ch26_300us_50us_7uA_1Hz_NoMagnet_251126_121501\Ch26_300us_50us_7uA_1Hz_NoMagnet_251126_121501.rhs'
 
 
 # RHS_FILE2           = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\Ch27_7uA_300us_50us_1Hz_256pulses_250309_190326.rhs'
