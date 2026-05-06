@@ -17,8 +17,15 @@ RESULTS_DIR = 'Results'
 # ============================================================
 #  PARAMS
 # ============================================================
+# With retina and response:
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_1Hz_250528_092146\Ch05_300us_50us_7uA_1Hz_250528_092146.rhs'
+RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_1Hz_250528_113143\Ch01_300us_50us_7uA_1Hz_250528_113143.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina4\Ch04_300us_50us_7uA_1Hz_250525_131107\Ch04_300us_50us_7uA_1Hz_250525_131107.rhs'
+#
+# No retina:
+# RHS_FILE1            = r'S:\shani_data\Intact\2025.11.26 E14\No retina\Ch26_300us_50us_7uA_1Hz_251126_111928\Ch26_300us_50us_7uA_1Hz_251126_111928.rhs'
 
-RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_1Hz_250528_092146\Ch05_300us_50us_7uA_1Hz_250528_092146.rhs'
+
 # RHS_FILE2           = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.03.09 E14\Ch27_7uA_300us_50us_1Hz_256pulses_250309_190326.rhs'
 EDF_FILE            = r'C:\Shani\MEA mini1200\2025.11.02 e14_Shani\Retina2\phase1-normal\2025-11-02T10-56-11J6_7uA_300us_60us_1Hz_100pulses.edf'
 EDF_STIM_ELECTRODE  = 'J6'

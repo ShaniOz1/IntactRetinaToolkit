@@ -161,8 +161,9 @@ def suppress_stim_artifact(
     segment: np.ndarray,
     mv_threshold: float = 3000.0,
     N_fit: int = 5,
-    breakaway_thr: float = 500.0,
+    breakaway_thr: float = 300.0,
     plot: bool = False,
+    sample_rate: int = 20000,
 ) -> np.ndarray:
     """
     Detect and blank the stimulation artifact in a single pulse segment.
@@ -189,12 +190,14 @@ def suppress_stim_artifact(
     plot          : if True, show a diagnostic figure with two subplots:
                     (top) raw segment + tail region + fitted curve;
                     (bottom) residual vs sample with breakaway threshold.
+    sample_rate   : recording sample rate in Hz, used to label the x-axis in ms
     """
     import matplotlib.pyplot as plt
 
     seg = np.asarray(segment, dtype=float)
     n = len(seg)
     samples = np.arange(n)
+    ms_axis = samples / sample_rate * 1000.0   # sample index → ms
 
     # ── Step 1: last above-threshold sample ───────────────────────────
     crossings = np.where(np.abs(seg) >= mv_threshold)[0]
@@ -203,7 +206,7 @@ def suppress_stim_artifact(
 
     last_cross = int(crossings[-1])
 
-    # ── Step 2: exponential fit to N_fit samples starting at last_cross ─
+    # ── Step 2: exponential fit to N_fit samples starting at last_cross ──
     # Model: f(x) = a · exp(b · x) + c
     # b < 0 → decaying tail, b > 0 → rising tail; both are tried and the
     # better fit (lower residual sum-of-squares) is kept.
@@ -229,11 +232,7 @@ def suppress_stim_artifact(
         best_sse    = np.inf
         for b0 in (-1.0 / max(fit_len, 1), 1.0 / max(fit_len, 1)):
             try:
-                popt, _ = curve_fit(
-                    _exp_model, x, y,
-                    p0=[a0, b0, c0],
-                    maxfev=2000,
-                )
+                popt, _ = curve_fit(_exp_model, x, y,p0=[a0, b0, c0],maxfev=2000)
                 sse = float(np.sum((_exp_model(x, *popt) - y) ** 2))
                 if sse < best_sse:
                     best_sse    = sse
@@ -246,7 +245,7 @@ def suppress_stim_artifact(
             fit_x     = np.arange(last_cross, n, dtype=float)
             fit_curve = _exp_model(x_full, *best_params)
 
-            # ── Step 3: residuals over full segment from last_cross ───────
+            # ── Step 3: residuals from last_cross ────────────────────────
             residuals[last_cross:] = np.abs(
                 seg[last_cross:] - _exp_model(x_full, *best_params)
             )
@@ -263,7 +262,7 @@ def suppress_stim_artifact(
     if plot:
         import matplotlib.gridspec as gridspec
 
-        fig = plt.figure(figsize=(10, 5))
+        fig = plt.figure(figsize=(6, 6))
         gs  = gridspec.GridSpec(
             2, 2,
             width_ratios=[5, 1],
@@ -274,20 +273,22 @@ def suppress_stim_artifact(
         ax3 = fig.add_subplot(gs[:, 1])   # full height, right column
 
         uv2mv = 1e-3   # convert µV → mV for all plots
+        artifact_end_ms = artifact_end / sample_rate * 1000.0
 
         # Top-left: raw signal, tail region, fitted curve
-        ax1.plot(samples, seg * uv2mv, color='black', linewidth=0.8, label='raw segment')
+        ax1.plot(ms_axis, seg * uv2mv, color='black', linewidth=0.8, label='raw segment')
         if last_cross < n:
             tail_end = min(last_cross + N_fit, n)
             ax1.plot(
-                samples[last_cross:tail_end], seg[last_cross:tail_end] * uv2mv,
+                ms_axis[last_cross:tail_end], seg[last_cross:tail_end] * uv2mv,
                 color='purple', linewidth=1.2, label='tail region',
             )
         if len(fit_curve):
-            ax1.plot(fit_x, fit_curve * uv2mv, color='green', linewidth=1.4,
-                     linestyle='--', label='fitted curve')
-        ax1.axvline(artifact_end, color='red', linewidth=0.8,
-                    linestyle=':', label=f'artifact end ({artifact_end})')
+            ax1.plot(fit_x / sample_rate * 1000.0, fit_curve * uv2mv, color='green',
+                     linewidth=1.4, linestyle='--', label='fitted curve')
+        ax1.axvline(artifact_end_ms, color='red', linewidth=0.8,
+                    linestyle=':', label=f'artifact end ({artifact_end_ms:.2f} ms)')
+        ax1.set_xlim(0, 10)
         ax1.set_ylabel('amplitude (mV)')
         ax1.set_ylim(-7, 7)
         ax1.legend(fontsize=7, frameon=False)
@@ -295,26 +296,157 @@ def suppress_stim_artifact(
 
         # Bottom-left: residual vs sample + breakaway threshold
         valid = ~np.isnan(residuals)
-        ax2.plot(samples[valid], residuals[valid] * uv2mv, color='black',
+        ax2.plot(ms_axis[valid], residuals[valid] * uv2mv, color='black',
                  linewidth=0.8, label='|residual|')
         ax2.axhline(breakaway_thr * uv2mv, color='red', linewidth=1.0,
                     linestyle='--',
                     label=f'breakaway thr ({breakaway_thr * uv2mv:.3f} mV)')
         ax2.set_ylabel('|signal − fit| (mV)')
-        ax2.set_xlabel('sample')
+        ax2.set_xlabel('time (ms)')
         ax2.set_ylim(-7, 7)
         ax2.legend(fontsize=7, frameon=False)
         ax2.set_title('Residual vs breakaway threshold')
 
-        # Right: cleaned signal (full figure height)
-        ax3.plot(samples, result * uv2mv, color='black', linewidth=0.5)
-        ax3.set_xlabel('sample')
+        # Right: cleaned signal, clipped to 10 ms
+        ax3.plot(ms_axis, result * uv2mv, color='black', linewidth=0.5)
+        ax3.set_xlim(0, 20)
+        ax3.set_xlabel('time (ms)')
         ax3.set_ylabel('amplitude (mV)')
         ax3.set_title('cleaned', fontsize=8)
 
         plt.show()
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# Artifact shape validation
+# ─────────────────────────────────────────────────────────────
+
+def evaluate_artifact_shape(
+    segment: np.ndarray,
+    sample_rate: int,
+    duration_us: float,
+    interphase_us: float,
+    negative_first: bool = True,
+    match_threshold: float = 0.5,
+    charge_balance_thr: float = 0.3,
+    plot: bool = False,
+) -> tuple[bool, float, float]:
+    """
+    Check whether the beginning of a raw pulse segment contains a biphasic
+    stimulation artifact matching the expected waveform shape.
+
+    A rectangular biphasic template is built from the stimulus parameters and
+    slid over the front of the segment.  At each position a Pearson-like
+    normalised correlation is computed (amplitude-invariant).  If the best
+    match exceeds ``match_threshold`` the artifact is considered present and
+    processing should continue; otherwise the window contains no recognisable
+    artifact and there is no point running artifact suppression or threshold
+    detection.
+
+    Template shape
+    --------------
+    negative_first=True  :  [─── phase1 (−1) ───][── gap (0) ──][─── phase2 (+1) ───]
+    negative_first=False :  [─── phase1 (+1) ───][── gap (0) ──][─── phase2 (−1) ───]
+
+    Parameters
+    ----------
+    segment         : 1-D raw voltage array for one pulse window (µV)
+    sample_rate     : recording sample rate (samples per second)
+    duration_us     : duration of each phase of the biphasic pulse (µs)
+    interphase_us   : duration of the interphase gap between the two phases (µs)
+    negative_first  : if True the first phase is negative; if False it is positive
+    match_threshold : minimum normalised correlation to accept the artifact
+                      as a valid biphasic pulse (0–1, default 0.5)
+    plot            : if True, display a diagnostic figure (template | signal)
+
+    Returns
+    -------
+    (is_valid, best_corr) : tuple[bool, float]
+        is_valid  – True when the best match meets or exceeds match_threshold
+        best_corr – peak normalised cross-correlation value (useful for diagnostics)
+    """
+    # ── Build biphasic rectangular template ─────────────────────────────
+    # Shape: phase1 → interphase → phase2 → 500 µs silence
+    ph_samples  = max(1, int(round(duration_us   / 1_000_000.0 * sample_rate)))
+    gap_samples = max(0, int(round(interphase_us / 1_000_000.0 * sample_rate)))
+    pad_samples = max(1, int(round(500           / 1_000_000.0 * sample_rate)))
+    # core: 1 leading zero + phase1 + gap + phase2 + 1 trailing zero + 500 µs tail
+    template_len = 2 * ph_samples + gap_samples + 2 + pad_samples
+
+    sign = -1.0 if negative_first else 1.0
+    template = np.zeros(template_len)
+    template[1 : 1 + ph_samples]                                          =  sign   # phase 1
+    # interphase gap stays 0
+    template[1 + ph_samples + gap_samples : 1 + 2 * ph_samples + gap_samples] = -sign   # phase 2
+    # trailing zero + 500 µs pad stay 0
+
+    # Normalise template to zero mean, unit norm (amplitude-invariant)
+    t = template - template.mean()
+    t_norm_denom = np.linalg.norm(t)
+    if t_norm_denom < 1e-12:
+        return False, 0.0, 0.0
+    t_norm = t / t_norm_denom
+
+    # ── Search region: positions 0–3 only ───────────────────────────────
+    max_start = 3
+    sig = segment.astype(float)
+
+    if len(sig) < template_len or np.ptp(sig) == 0:
+        return False, 0.0, 0.0
+
+    # ── Try positions 0, 1, 2, 3; pick best normalised correlation ───────
+    n_positions = min(max_start + 1, len(sig) - template_len + 1)
+    best_corr = 0.0
+    best_pos  = 0
+    for i in range(n_positions):
+        s = sig[i : i + template_len]
+        s_centered = s - s.mean()
+        denom = np.linalg.norm(s_centered)
+        if denom < 1e-12:
+            continue
+        corr = float(np.dot(t_norm, s_centered / denom))
+        if corr > best_corr:
+            best_corr = corr
+            best_pos  = i
+
+    if best_corr < match_threshold:
+        return False, best_corr, 0.0
+
+    # ── Charge-balance check on the best-aligned window ──────────────────
+    best_win  = sig[best_pos : best_pos + template_len]
+    imbalance = abs(np.sum(best_win)) / (np.sum(np.abs(best_win)) + 1e-12)
+
+    is_valid = imbalance <= charge_balance_thr
+
+    # ── Optional diagnostic plot ─────────────────────────────────────────
+    if plot:
+        import matplotlib.pyplot as plt
+
+        best_window = sig[best_pos : best_pos + template_len]
+        t_axis = np.arange(template_len) / sample_rate * 1000  # ms
+
+        fig, (ax_t, ax_s) = plt.subplots(1, 2, figsize=(5, 3))
+
+        ax_t.plot(t_axis, template,             color='black', linewidth=1.0)
+        ax_s.plot(t_axis, best_window * 1e-3,   color='black', linewidth=0.8)  # µV → mV
+
+        ax_s.set_title(f'corr={best_corr:.2f}  imb={imbalance:.2f}', fontsize=7)
+
+        for ax in (ax_t, ax_s):
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.set_xlabel('time (ms)')
+
+        ax_t.set_ylabel('amplitude (a.u.)')
+        ax_s.set_ylabel('amplitude (mV)')
+        ax_s.set_ylim(-7, 7)
+
+        plt.tight_layout()
+        plt.show()
+
+    return is_valid, best_corr, imbalance
 
 
 # ─────────────────────────────────────────────────────────────
@@ -519,12 +651,20 @@ def _run_rhs_raw(
     rec,
     win_size_ms: float = 30,
     threshold: float | None = None,
+    duration_us: float = 300,
+    interphase_us: float = 50,
+    negative_first: bool = True,
+    artifact_match_threshold: float = 0.65,
+    charge_balance_thr: float = 0.3,
+    plot: bool = True,
 ) -> pd.DataFrame:
     """
     RHS detection on raw data: artifact suppression per stim pulse → threshold detection.
 
     For each channel and each stim pulse:
       1. Extract the raw pulse window (stim onset → stim onset + win_size_ms).
+      1b. Validate artifact shape via ``evaluate_artifact_shape``; skip the
+          pulse entirely if no recognisable biphasic artifact is present.
       2. Apply ``suppress_stim_artifact`` with its default parameters to blank
          the artifact duration.
       3. Run threshold-based peak detection on the cleaned window.
@@ -535,21 +675,45 @@ def _run_rhs_raw(
     win_size_ms : float
     threshold : float or None
         Detection threshold (µV). If None, computed per-channel from raw data.
+    duration_us : float
+        Expected duration of each phase of the biphasic stimulus pulse (µs).
+        Used to build the shape-matching template.
+    interphase_us : float
+        Expected interphase gap between the two stimulus phases (µs).
+    negative_first : bool
+        True if the cathodic (negative) phase comes first.
+    artifact_match_threshold : float
+        Minimum normalised correlation (0–1) to consider the artifact present.
+        Pulses whose artifact correlates below this value are skipped.
+    plot : bool
+        If True, display one figure per channel showing the cleaned window for
+        every pulse (10 subplots per row, x-axis in ms, clipped to 20 ms).
     """
+    import matplotlib.pyplot as plt
+
     window_samples = int(win_size_ms / 1000 * rec.sample_rate)
+    ph_samples   = max(1, int(round(duration_us   / 1_000_000.0 * rec.sample_rate)))
+    gap_samples  = max(0, int(round(interphase_us / 1_000_000.0 * rec.sample_rate)))
+    pad_samples  = max(1, int(round(500           / 1_000_000.0 * rec.sample_rate)))
+    template_len = 2 * ph_samples + gap_samples + 2 + pad_samples
+    art_axis     = np.arange(template_len) / rec.sample_rate * 1000.0
     raw_data = _resolve_data(rec, 'raw')
     stim_ch_name = rec.stim_channel_name
     rows = []
+    all_channel_windows: dict[str, list] = {}  # ch_name → [window, ...]
 
     for ch_idx, ch_name in enumerate(rec.channel_names):
         if stim_ch_name and ch_name == stim_ch_name:
             continue
-        ch_idx = 8
+        # ch_idx = 10
         raw_ch = raw_data[ch_idx, :]
         ch_threshold = (threshold if threshold is not None
                         else _compute_threshold(
                             raw_ch, rec.stim_indices, rec.sample_rate
                         ))
+
+        if plot:
+            all_channel_windows[ch_name] = []
 
         for pulse_idx, stim_idx in enumerate(rec.stim_indices):
             start = int(stim_idx)
@@ -558,8 +722,24 @@ def _run_rhs_raw(
                 continue
 
             segment = raw_ch[start:end]
-            window  = suppress_stim_artifact(segment)
 
+            # ── 1b. Artifact shape validation ────────────────────────────
+            artifact_valid, corr, imbalance = evaluate_artifact_shape(
+                segment,
+                sample_rate=rec.sample_rate,
+                duration_us=duration_us,
+                interphase_us=interphase_us,
+                negative_first=negative_first,
+                match_threshold=artifact_match_threshold,
+                charge_balance_thr=charge_balance_thr,
+            )
+            if not artifact_valid:
+                continue
+
+            window = suppress_stim_artifact(segment, sample_rate=rec.sample_rate)
+
+            if plot:
+                all_channel_windows[ch_name].append((window, corr, segment[:template_len], imbalance))
 
             if len(window) == 0 or abs(window.min()) < ch_threshold:
                 continue
@@ -576,6 +756,72 @@ def _run_rhs_raw(
                 'latency_ms':   lat_ms,
                 'width_ms':     wid_ms,
             })
+
+    # ── One figure for the entire file: one subplot per channel ──────────
+    if plot and all_channel_windows:
+        ch_names_plot = list(all_channel_windows.keys())
+        n_channels    = len(ch_names_plot)
+        n_cols        = 8
+        n_rows        = int(np.ceil(n_channels / n_cols))
+        ms_axis       = np.arange(window_samples) / rec.sample_rate * 1000.0
+
+        fig, axes = plt.subplots(
+            n_rows, n_cols,
+            figsize=(n_cols * 1.8, n_rows * 1.8),
+            squeeze=False,
+        )
+        fig.suptitle(rec.file_name, fontsize=9)
+
+        for ax_i, ch in enumerate(ch_names_plot):
+            ax = axes[ax_i // n_cols][ax_i % n_cols]
+            corrs = []
+            for win, corr, _, __ in all_channel_windows[ch]:
+                ax.plot(ms_axis[:len(win)], win * 1e-3,
+                        color='black', linewidth=0.4, alpha=0.3)
+                corrs.append(corr)
+            ax.set_xlim(0, 20)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            mean_corr = float(np.mean(corrs)) if corrs else float('nan')
+            ax.set_title(f'{ch}\ncorr={mean_corr:.2f}', fontsize=5)
+            ax.tick_params(labelsize=5)
+
+        for ax_i in range(n_channels, n_rows * n_cols):
+            axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
+
+        plt.tight_layout()
+        plt.show()
+
+        # ── Artifact figure ───────────────────────────────────────────────
+        fig2, axes2 = plt.subplots(
+            n_rows, n_cols,
+            figsize=(n_cols * 1.8, n_rows * 1.8),
+            squeeze=False,
+        )
+        fig2.suptitle(f'{rec.file_name} — artifact', fontsize=9)
+
+        for ax_i, ch in enumerate(ch_names_plot):
+            ax = axes2[ax_i // n_cols][ax_i % n_cols]
+            corrs = []
+            imbs  = []
+            for _, corr, art, imb in all_channel_windows[ch]:
+                ax.plot(art_axis[:len(art)], art * 1e-3,
+                        color='steelblue', linewidth=0.4, alpha=0.3)
+                corrs.append(corr)
+                imbs.append(imb)
+            ax.set_xlim(0, art_axis[-1])
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            mean_corr = float(np.mean(corrs)) if corrs else float('nan')
+            mean_imb  = float(np.mean(imbs))  if imbs  else float('nan')
+            ax.set_title(f'{ch}\ncorr={mean_corr:.2f}  imb={mean_imb:.2f}', fontsize=5)
+            ax.tick_params(labelsize=5)
+
+        for ax_i in range(n_channels, n_rows * n_cols):
+            axes2[ax_i // n_cols][ax_i % n_cols].set_visible(False)
+
+        plt.tight_layout()
+        plt.show()
 
     return pd.DataFrame(rows) if rows else _empty_direct_df()
 
