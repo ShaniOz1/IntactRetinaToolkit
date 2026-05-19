@@ -3,9 +3,9 @@ IntactRetinaToolkit.dataobj.analysis.direct
 =============================================
 Direct (stimulus-evoked) response detection.
 
-- RHS raw  : SALPA artifact suppression → threshold-based detection
-- RHS filt : ICA-based artifact removal → spike shape validation
-- EDF      : threshold-based detection on blanked+filtered signal
+- RHS raw     : artifact suppression → local-minimum peak detection
+- RHS blanked : threshold-based detection on blanked data
+- EDF         : threshold-based detection on blanked+filtered signal
 
 Called via rec.detect_direct_response().
 Results stored in rec.direct_response as a DataFrame.
@@ -462,9 +462,11 @@ def evaluate_artifact_shape(
 
 def run_direct_response(
     rec,
-    data_type: str = 'filtered',
+    data_type: str = 'raw',
     win_size_ms: float = 15.0,
     threshold: float | None = None,
+    plot: bool = True,
+    output_folder: str | None = None,
 ) -> pd.DataFrame:
     """
     Detect direct responses and return a DataFrame.
@@ -476,12 +478,10 @@ def run_direct_response(
     rec : RetinalRecording
     data_type : str
         Which data array to use for detection.
-        RHS accepts 'filtered', 'blanked', or 'raw' (default 'filtered').
+        RHS accepts 'raw' (default) or 'blanked'.
         EDF always uses 'blanked' regardless of this argument.
     win_size_ms : float
         Window extracted around each stim pulse, in ms.
-    blank_ms : float
-        Samples zeroed after each stim onset before detection, in ms.
     threshold : float or None
         If provided, use this value directly as the detection threshold
         (EDF pipeline) instead of computing it from the data.
@@ -499,7 +499,7 @@ def run_direct_response(
         return _empty_direct_df()
 
     if rec.source == 'rhs':
-        df = _run_rhs(rec, data_type, win_size_ms)
+        df = _run_rhs(rec, data_type, win_size_ms, plot=plot, output_folder=output_folder)
         # RHS amplitudes are in µV — convert to mV to match EDF
         if not df.empty:
             df['amplitude_mV'] = df['amplitude_mV'] / 1000.0
@@ -595,63 +595,24 @@ def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.Data
 # RHS pipeline
 # ─────────────────────────────────────────────────────────────
 
-def _run_rhs(rec, data_type: str, win_size_ms: float) -> pd.DataFrame:
+def _run_rhs(rec, data_type: str, win_size_ms: float, plot: bool = True, output_folder: str | None = None) -> pd.DataFrame:
     """
     Dispatch to the appropriate RHS detection method based on data_type.
 
     Parameters
     ----------
-    data_type : {'blanked', 'filtered', 'raw'}
-        - 'blanked'  : threshold-based detection (same as EDF pipeline).
-        - 'filtered' : ICA artifact removal followed by spike detection.
-        - 'raw'      : alternative detection method (not yet implemented).
+    data_type : {'raw', 'blanked'}
+        - 'raw'     : artifact suppression + local-minimum peak detection.
+        - 'blanked' : threshold-based detection on pre-blanked data.
     """
-    if data_type == 'blanked':
+    if data_type == 'raw':
+        return _run_rhs_raw(rec, plot=plot, output_folder=output_folder)
+    elif data_type == 'blanked':
         return _run_threshold_detection(rec, win_size_ms)
-    elif data_type == 'filtered':
-        return _run_rhs_ica(rec, win_size_ms)
-    elif data_type == 'raw':
-        return _run_rhs_raw(rec)
     else:
         raise ValueError(
-            f"data_type must be 'blanked', 'filtered', or 'raw'; got {data_type!r}"
+            f"data_type must be 'raw' or 'blanked'; got {data_type!r}"
         )
-
-
-def _run_rhs_ica(rec, win_size_ms: float) -> pd.DataFrame:
-    """RHS detection via ICA artifact removal → spike shape validation."""
-    win_samples = int(win_size_ms / 1000 * rec.sample_rate)
-
-    data   = _resolve_data(rec, 'filtered')
-    pulses = _extract_pulses(rec.stim_indices, data, win_samples)
-    # pulses: (n_pulses, n_channels, n_samples_per_pulse)
-
-    stim_ch_idx = (rec.get_channel_index(rec.stim_channel_name)
-                   if rec.stim_channel_name else None)
-
-    rows = []
-    for ch_idx, ch_name in enumerate(rec.channel_names):
-        if stim_ch_idx is not None and ch_idx == stim_ch_idx:
-            continue
-
-        ch_pulses = pulses[:, ch_idx, :]           # (n_pulses, n_samples)
-        cleaned   = _ica_remove_artifact(ch_pulses)
-
-        for pulse_idx, pulse in enumerate(cleaned):
-            spike = _detect_spike(pulse, rec.sample_rate)
-            if spike is None:
-                continue
-
-            amp, lat_ms, wid_ms = spike
-            rows.append({
-                'channel':      ch_name,
-                'pulse_index':  pulse_idx,
-                'amplitude_mV': amp,
-                'latency_ms':   lat_ms,
-                'width_ms':     wid_ms,
-            })
-
-    return pd.DataFrame(rows) if rows else _empty_direct_df()
 
 
 def _run_rhs_raw(
@@ -663,17 +624,19 @@ def _run_rhs_raw(
     artifact_match_threshold: float = 0.9,
     charge_balance_thr: float = 0.3,
     plot: bool = True,
+    output_folder: str | None = None,
 ) -> pd.DataFrame:
     """
-    RHS detection on raw data: artifact suppression per stim pulse → threshold detection.
+    RHS detection on raw data: per-pulse artifact suppression → peak detection.
 
     For each channel and each stim pulse:
       1. Extract the raw pulse window (stim onset → stim onset + win_size_ms).
-      1b. Validate artifact shape via ``evaluate_artifact_shape``; skip the
-          pulse entirely if no recognisable biphasic artifact is present.
-      2. Apply ``suppress_stim_artifact`` with its default parameters to blank
-         the artifact duration.
-      3. Run threshold-based peak detection on the cleaned window.
+      2. Validate biphasic artifact shape via ``evaluate_artifact_shape``.
+      3. Suppress the artifact via ``suppress_stim_artifact`` and smooth with
+         a 0.2 ms moving-average.
+      4. Detect the negative peak via ``_evaluate_peak``: deepest sample from
+         2 ms onward that is a strict local minimum in a ±0.2 ms neighbourhood,
+         with amplitude < −0.02 mV and half-width < 5 ms.
 
     Parameters
     ----------
@@ -708,15 +671,17 @@ def _run_rhs_raw(
     raw_data = _resolve_data(rec, 'raw')
     stim_ch_name = rec.stim_channel_name
     rows = []
+    valid_spike_counts: dict[str, int] = {}    # ch_name → n valid spikes
     all_channel_windows: dict[str, list] = {}  # ch_name → [window, ...]
 
-    min_lat_samp = int(2.0  * rec.sample_rate / 1000)   # 1.5 ms in samples
-    max_wid_samp = int(5.0  * rec.sample_rate / 1000)   # 5 ms in samples
+    min_lat_samp  = int(2.5  * rec.sample_rate / 1000)   # 2.5 ms in samples
+    max_lat_samp  = int(10.0 * rec.sample_rate / 1000)   # 10 ms in samples
+    local_min_rad = int(0.2  * rec.sample_rate / 1000)   # ±0.2 ms neighbourhood
 
     for ch_idx, ch_name in enumerate(rec.channel_names):
         if stim_ch_name and ch_name == stim_ch_name:
             continue
-        # ch_idx = 11
+        # ch_idx = 15
         raw_ch = raw_data[ch_idx, :]
         ch_threshold = (threshold if threshold is not None
                         else _compute_threshold(
@@ -734,7 +699,7 @@ def _run_rhs_raw(
 
             segment = raw_ch[start:end]
 
-            # ── 1b. Artifact shape validation ────────────────────────────
+            # ── Step 2: biphasic artifact shape validation ────────────────
             artifact_valid, corr, imbalance = evaluate_artifact_shape(
                 segment,
                 sample_rate=rec.sample_rate,
@@ -745,54 +710,38 @@ def _run_rhs_raw(
                 charge_balance_thr=charge_balance_thr,
             )
 
+            # ── Step 3: artifact suppression + smoothing ──────────────────
+            rms_before = float(np.sqrt(np.mean(segment ** 2))) if artifact_valid else float('nan')
             window = suppress_stim_artifact(segment, sample_rate=rec.sample_rate)
+            _k     = max(1, int(0.4 * rec.sample_rate / 1000))
+            window = np.convolve(window, np.ones(_k) / _k, mode='same')
+            rms_after  = float(np.sqrt(np.mean(window ** 2)))  if artifact_valid else float('nan')
 
-            spike_valid = False
-            peak_local  = -1
-            amp = lat_ms = wid_ms = float('nan')
-            if artifact_valid and len(window) > 2:
-                dv  = np.diff(window)
-                d2v = np.diff(window, n=2)
+            # ── Step 4: peak detection ────────────────────────────────────
+            spike_valid, peak_local, amp, lat_ms, wid_ms = (
+                _evaluate_peak(window, min_lat_samp, max_lat_samp, local_min_rad, rec.sample_rate)
+                if artifact_valid else
+                (False, -1, float('nan'), float('nan'), float('nan'))
+            )
 
-                # Indices where first derivative crosses zero negative→positive (valleys)
-                valley_idx = np.where((dv[:-1] < 0) & (dv[1:] >= 0))[0] + 1
-                # Restrict to allowed latency window and confirm with second derivative
-                valley_idx = [
-                    i for i in valley_idx
-                    if i >= min_lat_samp and (i - 1) < len(d2v) and d2v[i - 1] > 0
-                ]
-
-                if valley_idx:
-                    # Pick the deepest valley
-                    peak_local = int(min(valley_idx, key=lambda i: window[i]))
-                    amp    = float(window[peak_local])
-                    lat_ms = peak_local / rec.sample_rate * 1000
-                    wid_ms = _estimate_width(window, peak_local, rec.sample_rate)
-                    try:
-                        _ww      = scipy.signal.peak_widths(-window, [peak_local], rel_height=0.5)
-                        wid_samp = int(_ww[3][0] - _ww[2][0])
-                    except Exception:
-                        wid_samp = max_wid_samp + 1
-                    spike_valid = (
-                        amp < -20.0                 # < -0.02 mV (µV units)
-                        and wid_samp < max_wid_samp # width < 5 ms
-                    )
+            if spike_valid:
+                valid_spike_counts[ch_name] = valid_spike_counts.get(ch_name, 0) + 1
 
             if plot:
                 stored_peak = peak_local if spike_valid else -1
                 all_channel_windows[ch_name].append((window, corr, segment[:template_len], imbalance, artifact_valid, spike_valid, stored_peak))
 
-            if not artifact_valid:
-                continue
-
-            if spike_valid:
-                rows.append({
-                    'channel':      ch_name,
-                    'pulse_index':  pulse_idx,
-                    'amplitude_mV': amp,
-                    'latency_ms':   lat_ms,
-                    'width_ms':     wid_ms,
-                })
+            rows.append({
+                'channel':      ch_name,
+                'pulse_index':  pulse_idx,
+                'amplitude_mV': amp    if spike_valid else float('nan'),
+                'latency_ms':   lat_ms if spike_valid else float('nan'),
+                'width_ms':     wid_ms if spike_valid else float('nan'),
+                'corr':         corr,
+                'imbalance':    imbalance,
+                'rms_before':   rms_before,
+                'rms_after':    rms_after if spike_valid else float('nan'),
+            })
 
     # ── One figure for the entire file: one subplot per channel ──────────
     if plot and all_channel_windows:
@@ -802,6 +751,12 @@ def _run_rhs_raw(
         n_rows        = int(np.ceil(n_channels / n_cols))
         ms_axis       = np.arange(window_samples) / rec.sample_rate * 1000.0
 
+        _CLR_ARTIFACT  = '#8B0000'   # dark red  — artifact invalid
+        _CLR_NO_SPIKE  = 'grey'      # grey      — artifact ok, no spike
+        _CLR_SPIKE     = 'black'     # black     — valid spike
+        _CLR_AVG       = 'steelblue' # blue      — average trace
+        _CLR_ANNOT     = 'purple'    # purple    — peak annotation
+
         fig, axes = plt.subplots(
             n_rows, n_cols,
             figsize=(n_cols * 1.5, n_rows * 2.5),
@@ -809,56 +764,84 @@ def _run_rhs_raw(
         )
         fig.suptitle(rec.file_name, fontsize=9)
 
+        # Legend patches drawn on the first visible axis after the loop
+        import matplotlib.patches as mpatches
+        legend_handles = [
+            mpatches.Patch(color=_CLR_ARTIFACT, label='artifact invalid'),
+            mpatches.Patch(color=_CLR_NO_SPIKE, label='no spike'),
+            mpatches.Patch(color=_CLR_SPIKE,    label='valid spike'),
+            mpatches.Patch(color=_CLR_AVG,      label='average'),
+        ]
+
         for ax_i, ch in enumerate(ch_names_plot):
             ax = axes[ax_i // n_cols][ax_i % n_cols]
             corrs = []
             windows_list = []
             peak_locals  = []
-            for win, corr, _, __, artifact_ok, spike_ok, pk in all_channel_windows[ch]:
+            amps_mv      = []
+            wids_ms      = []
+            imbs         = []
+            for win, corr, _, imb, artifact_ok, spike_ok, pk in all_channel_windows[ch]:
                 if not artifact_ok:
-                    color = 'red'
+                    color = _CLR_ARTIFACT
                 elif not spike_ok:
-                    color = 'grey'
+                    color = _CLR_NO_SPIKE
                 else:
-                    color = 'black'
+                    color = _CLR_SPIKE
                 ax.plot(ms_axis[:len(win)], win * 1e-3,
                         color=color, linewidth=0.4, alpha=0.3)
                 corrs.append(corr)
+                imbs.append(imb)
                 if spike_ok:
                     windows_list.append(win)
                     peak_locals.append(pk)
+                    amps_mv.append(float(win[pk]) * 1e-3)
+                    wids_ms.append(_estimate_width(win, pk, rec.sample_rate))
 
-            if windows_list:
-                min_len     = min(len(w) for w in windows_list)
-                avg_win     = np.mean([w[:min_len] for w in windows_list], axis=0)
-                avg_ms      = ms_axis[:min_len]
-                peak_idx    = int(round(np.mean(peak_locals)))
-                peak_idx    = min(peak_idx, len(avg_win) - 1)
-                avg_lat_ms  = float(np.mean(peak_locals)) / rec.sample_rate * 1000
-                peak_amp_mv = float(avg_win[peak_idx]) * 1e-3
-                peak_wid    = _estimate_width(avg_win, peak_idx, rec.sample_rate)
+            if len(windows_list) > 5:
+                min_len  = min(len(w) for w in windows_list)
+                avg_win  = np.mean([w[:min_len] for w in windows_list], axis=0)
+                avg_ms   = ms_axis[:min_len]
 
-                ax.plot(avg_ms, avg_win * 1e-3, color='steelblue', linewidth=1.0, alpha=0.9)
-                ax.plot(avg_lat_ms, peak_amp_mv, 'v', color='red', markersize=3, zorder=5)
+                med_lat_ms  = float(np.median(peak_locals)) / rec.sample_rate * 1000
+                med_amp_mv  = float(np.median([a for a in amps_mv if not np.isnan(a)]))
+                wids_valid  = [w for w in wids_ms if not np.isnan(w)]
+                med_wid_ms  = float(np.median(wids_valid)) if wids_valid else float('nan')
+
+                ax.plot(avg_ms, avg_win * 1e-3, color=_CLR_AVG, linewidth=1.0, alpha=0.9)
+                ax.plot(med_lat_ms, med_amp_mv, 'v', color=_CLR_ANNOT, markersize=3, zorder=5)
                 ax.annotate(
-                    f'{peak_amp_mv:.2f} mV\nlat={avg_lat_ms:.2f} ms\nwid={peak_wid:.2f} ms',
-                    xy=(avg_lat_ms, peak_amp_mv),
+                    f'{med_amp_mv:.2f} mV\nlat={med_lat_ms:.2f} ms\nwid={med_wid_ms:.2f} ms',
+                    xy=(med_lat_ms, med_amp_mv),
                     xytext=(3, -6), textcoords='offset points',
-                    fontsize=4, color='red',
+                    fontsize=6, color=_CLR_ANNOT,
                 )
 
             ax.set_xlim(0, 20)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             mean_corr = float(np.mean(corrs)) if corrs else float('nan')
-            ax.set_title(f'{ch}\ncorr={mean_corr:.2f}', fontsize=5)
-            ax.tick_params(labelsize=5)
+            mean_imb  = float(np.mean(imbs))  if imbs  else float('nan')
+            ax.set_title(f'ch-{ch}\ncorr={mean_corr:.2f} | sum={mean_imb:.2f}', fontsize=6)
+            ax.tick_params(labelsize=6)
 
-        for ax_i in range(n_channels, n_rows * n_cols):
+        # Hide unused subplots except the last slot, which holds the legend
+        for ax_i in range(n_channels, n_rows * n_cols - 1):
             axes[ax_i // n_cols][ax_i % n_cols].set_visible(False)
 
+        ax_legend = axes[-1][-1]
+        ax_legend.set_visible(True)
+        ax_legend.axis('off')
+        ax_legend.legend(handles=legend_handles, fontsize=6, frameon=False, loc='center')
+
         plt.tight_layout()
-        plt.show()
+        if output_folder:
+            import os
+            fig.savefig(os.path.join(output_folder, f'{rec.file_name}_direct_response.png'),
+                        dpi=150, bbox_inches='tight')
+            plt.close(fig)
+        else:
+            plt.show()
 
         # ── Artifact figure ───────────────────────────────────────────────
         fig2, axes2 = plt.subplots(
@@ -890,9 +873,22 @@ def _run_rhs_raw(
             axes2[ax_i // n_cols][ax_i % n_cols].set_visible(False)
 
         plt.tight_layout()
-        plt.show()
+        if output_folder:
+            import os
+            fig2.savefig(os.path.join(output_folder, f'{rec.file_name}_artifact.png'),
+                         dpi=150, bbox_inches='tight')
+            plt.close(fig2)
+        else:
+            plt.show()
 
-    return pd.DataFrame(rows) if rows else _empty_direct_df()
+    if not rows:
+        return _empty_direct_df()
+
+    df = pd.DataFrame(rows)
+    # Mirror the figure's annotation threshold: only keep channels with >5 valid spikes
+    responsive = {ch for ch, n in valid_spike_counts.items() if n > 5}
+    df = df[df['channel'].isin(responsive)]
+    return df if not df.empty else _empty_direct_df()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -900,9 +896,8 @@ def _run_rhs_raw(
 # ─────────────────────────────────────────────────────────────
 
 _DATA_ATTRS = {
-    'filtered': 'filtered_data',
-    'blanked':  'blanked_data',
-    'raw':      'recording_data',
+    'blanked': 'blanked_data',
+    'raw':     'recording_data',
 }
 
 def _resolve_data(rec, data_type: str) -> np.ndarray:
@@ -910,12 +905,12 @@ def _resolve_data(rec, data_type: str) -> np.ndarray:
 
     Parameters
     ----------
-    data_type : {'filtered', 'blanked', 'raw'}
+    data_type : {'blanked', 'raw'}
     """
     attr = _DATA_ATTRS.get(data_type)
     if attr is None:
         raise ValueError(
-            f"data_type must be 'filtered', 'blanked', or 'raw'; got {data_type!r}"
+            f"data_type must be 'blanked' or 'raw'; got {data_type!r}"
         )
     data = getattr(rec, attr, None)
     if data is None:
@@ -1054,22 +1049,65 @@ def _compute_threshold(
     return float(np.mean(avg_window)) - 0.15
 
 
+def _evaluate_peak(
+    window: np.ndarray,
+    min_lat_samp: int,
+    max_lat_samp: int,
+    local_min_rad: int,
+    sample_rate: int,
+) -> tuple:
+    """
+    Find and validate the negative peak in a cleaned pulse window.
+
+    Tries up to twice: if the first candidate fails, masks it and searches
+    for the next deepest sample.
+
+    Returns (spike_valid, peak_local, amp_uv, lat_ms, wid_ms).
+    spike_valid is False and the other values are -1 / nan if no valid peak found.
+    """
+    search_end = min(max_lat_samp, len(window))
+    if search_end <= min_lat_samp:
+        return False, -1, float('nan'), float('nan'), float('nan')
+
+    min_wid_samp = int(0.5 * sample_rate / 1000)
+    max_wid_samp = int(5.0 * sample_rate / 1000)
+
+    # Find valleys in [min_lat_samp, max_lat_samp): negate for find_peaks
+    candidates, _ = scipy.signal.find_peaks(
+        -window[min_lat_samp:search_end],
+        height=25.0,                          # amp < -25 µV
+        width=(min_wid_samp, max_wid_samp),   # half-width < 5 ms
+        distance=local_min_rad,               # enforce ±0.2 ms exclusion radius
+    )
+
+    if len(candidates) == 0:
+        return False, -1, float('nan'), float('nan'), float('nan')
+
+    # Sort deepest first
+    candidates = candidates[np.argsort(window[min_lat_samp + candidates])]
+
+    for offset in candidates[:2]:
+        peak_local = min_lat_samp + int(offset)
+        amp        = float(window[peak_local])
+        lat_ms     = peak_local / sample_rate * 1000
+        wid_ms     = _estimate_width(window, peak_local, sample_rate)
+
+        if not np.isnan(wid_ms) and wid_ms < 5.0:
+            return True, peak_local, amp, lat_ms, wid_ms
+
+    return False, -1, float('nan'), float('nan'), float('nan')
+
+
 def _estimate_width(
     window: np.ndarray,
     peak_local: int,
     sample_rate: int,
 ) -> float:
     """Estimate spike width at half-maximum in ms."""
-    import warnings
     try:
-        inv = -window
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', scipy.signal.PeakPropertyWarning)
-            widths = scipy.signal.peak_widths(inv, [peak_local], rel_height=0.5)
+        widths = scipy.signal.peak_widths(-window, [peak_local], rel_height=0.5)
         w = float(widths[3][0] - widths[2][0])
-        if w == 0:
-            return float('nan')
-        return w / sample_rate * 1000
+        return w / sample_rate * 1000 if w > 0 else float('nan')
     except Exception:
         return float('nan')
 
@@ -1077,6 +1115,7 @@ def _estimate_width(
 def _empty_direct_df() -> pd.DataFrame:
     return pd.DataFrame(columns=[
         'channel', 'pulse_index', 'amplitude_mV', 'latency_ms', 'width_ms',
+        'corr', 'imbalance', 'rms_before', 'rms_after',
         'amplitude_decay_pct',
     ])
 

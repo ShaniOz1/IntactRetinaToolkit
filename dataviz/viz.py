@@ -17,6 +17,9 @@ plot_overlay_pulses              — raw pulse overlays (single obj) or averages
 plot_direct_response_summary     — MEA heatmaps of mean amp/latency/width + decay heatmap + decay trace
 plot_spikes_layout_mea           — overlay all pulse windows on the 12×12 MEA grid (EDF)
 plot_spikes_layout_probe16       — overlay all pulse windows on the prob16 ring layout (RHS)
+plot_rms_before_after            — boxplot of RMS before/after artifact suppression across all CSV files
+plot_response_parameter_histograms — histograms of amplitude, latency, width across all CSV files
+plot_amplitudes_vs_pulse         — scatter of all amplitudes vs pulse number with mean ± std purple band
 """
 
 from __future__ import annotations
@@ -776,13 +779,15 @@ def plot_spikes_layout_probe16(
             end   = int(min(stim_idx + win_samples, data.shape[1]))
             if start < end:
                 window_vals.append(data[ch_idx, start:end])
-    if window_vals:
+    if data_type == 'blanked':
+        ylim = (-500, 500)   # ±0.5 mV in µV
+    elif window_vals:
         all_wins = np.concatenate(window_vals)
         ymin = math.floor(float(all_wins.min()) / 50) * 50
         ymax = math.ceil( float(all_wins.max()) / 50) * 50
+        ylim = (ymin, ymax)
     else:
-        ymin, ymax = -50, 50
-    ylim = (ymin, ymax)
+        ylim = (-50, 50)
 
     # Physical ring layout — channel order around the circle starting at
     # 3 o'clock, going counter-clockwise.  99 = empty slot.
@@ -1082,6 +1087,492 @@ def plot_direct_response_summary(
             f'{output_folder}/direct_response_summary.png',
             dpi=150, bbox_inches='tight',
         )
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_rms_before_after(
+    csv_folder: str,
+    output_folder: str | None = None,
+    save: bool = True,
+) -> None:
+    """
+    Collect all *_direct_response.csv files in csv_folder and plot a single
+    paired boxplot of RMS before vs. after artifact suppression (pooled across
+    all files and channels).
+
+    Only pulses where both rms_before and rms_after are present (not NaN)
+    are included.  An N= annotation shows the number of files and channels
+    contributing to the plot.
+
+    Parameters
+    ----------
+    csv_folder : str
+        Directory containing *_direct_response.csv files.
+    output_folder : str | None
+        If provided (and save=True), saves the figure there.
+    save : bool
+        If True and output_folder is set, saves instead of showing.
+    """
+    import os
+    import glob
+    import pandas as pd
+
+    pattern   = os.path.join(csv_folder, '*_direct_response.csv')
+    csv_files = sorted(glob.glob(pattern))
+    if not csv_files:
+        print(f"[plot_rms_before_after] No *_direct_response.csv files found in {csv_folder}")
+        return
+
+    all_before = []
+    all_after  = []
+    n_files    = 0
+    channels   = set()
+
+    for path in csv_files:
+        df    = pd.read_csv(path)
+        valid = df.dropna(subset=['rms_before', 'rms_after'])
+        if valid.empty:
+            continue
+        all_before.extend(valid['rms_before'].values)
+        all_after.extend(valid['rms_after'].values)
+        channels.update(valid['channel'].unique())
+        n_files += 1
+
+    if not all_before:
+        print("[plot_rms_before_after] No valid pulses found across all files.")
+        return
+
+    fig, ax = plt.subplots(figsize=(4, 5))
+
+    # clr_before = '#9b59b6'   # medium purple
+    clr_before = 'grey'   # medium purple
+    # clr_after  = '#d7bde2'   # light purple
+    clr_after  = 'lightgrey'   # light purple
+
+    bp = ax.boxplot(
+        [all_before, all_after],
+        positions=[1, 2],
+        widths=0.5,
+        patch_artist=True,
+        showfliers=False,
+        medianprops=dict(color='white', linewidth=2),
+    )
+    bp['boxes'][0].set_facecolor(clr_before)
+    bp['boxes'][1].set_facecolor(clr_after)
+
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(['Before', 'After'], fontsize=10)
+    ax.set_ylabel('RMS (µV)', fontsize=9)
+    # ax.set_title('Artifact suppression — RMS', fontsize=10)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    ax.text(
+        0.97, 0.97,
+        f'N files = {n_files}\nN channels = {len(channels)}',
+        transform=ax.transAxes,
+        fontsize=8, va='top', ha='right', color='grey',
+    )
+
+    plt.tight_layout()
+    if save and output_folder:
+        os.makedirs(output_folder, exist_ok=True)
+        fig.savefig(os.path.join(output_folder, 'rms_before_after.png'),
+                    dpi=150, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_response_parameter_histograms(
+    csv_folder: str,
+    output_folder: str | None = None,
+    save: bool = True,
+) -> None:
+    """
+    Collect all *_direct_response.csv files in csv_folder and plot a
+    three-panel histogram figure: amplitude (mV), latency (ms), width (ms).
+
+    Only rows with a detected response (non-NaN amplitude) are included.
+    An N= annotation shows the number of files, channels, and responses.
+
+    Parameters
+    ----------
+    csv_folder : str
+        Directory containing *_direct_response.csv files.
+    output_folder : str | None
+        If provided (and save=True), saves the figure there.
+    save : bool
+        If True and output_folder is set, saves instead of showing.
+    """
+    import os
+    import glob
+    import pandas as pd
+
+    pattern   = os.path.join(csv_folder, '*_direct_response.csv')
+    csv_files = sorted(glob.glob(pattern))
+    if not csv_files:
+        print(f"[plot_response_parameter_histograms] No CSV files found in {csv_folder}")
+        return
+
+    frames   = []
+    n_files  = 0
+    channels = set()
+
+    for path in csv_files:
+        df    = pd.read_csv(path)
+        valid = df.dropna(subset=['amplitude_mV'])
+        if valid.empty:
+            continue
+        frames.append(valid)
+        channels.update(valid['channel'].unique())
+        n_files += 1
+
+    if not frames:
+        print("[plot_response_parameter_histograms] No detected responses found.")
+        return
+
+    data                       = pd.concat(frames, ignore_index=True)
+    data['amplitude_uV']       = data['amplitude_mV'].abs() * 1000
+    n_resp    = len(data)
+    clr_face  = '#d7bde2'   # light purple
+    clr_edge  = '#9b59b6'   # medium purple
+
+    params = [
+        ('amplitude_uV', '|Amplitude| (µV)', 20),
+        ('latency_ms',   'Latency (ms)',      20),
+        ('width_ms',     'Width (ms)',        20),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(11, 4))
+
+    for ax, (col, xlabel, bins) in zip(axes, params):
+        values = data[col].dropna()
+        ax.hist(values, bins=bins, color=clr_face, edgecolor=clr_edge,
+                linewidth=0.5, alpha=0.85)
+        ax.set_xlabel(xlabel, fontsize=9)
+        ax.set_ylabel('count', fontsize=9)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.tick_params(labelsize=8)
+        median = values.median()
+        ax.axvline(median, color=clr_edge, linewidth=1.2,
+                   linestyle='--', label=f'median = {median:.2f}')
+        ax.legend(fontsize=7, frameon=False, loc='upper right')
+
+    # fig.suptitle('Direct response — parameter distributions', fontsize=10)
+    axes[0].text(
+        0.98, 0.90,
+        f'N files = {n_files}\nN channels = {len(channels)}\nN responses = {n_resp}',
+        transform=axes[0].transAxes,
+        fontsize=7, va='top', ha='right', color='grey',
+    )
+
+    plt.tight_layout()
+    if save and output_folder:
+        os.makedirs(output_folder, exist_ok=True)
+        fig.savefig(os.path.join(output_folder, 'response_parameter_histograms.png'),
+                    dpi=150, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_amplitudes_vs_pulse(
+    csv_folder: str,
+    output_folder: str | None = None,
+    save: bool = True,
+    normalized: bool = True,
+    n_pulses: int = 50,
+) -> None:
+    """
+    Collect all *_direct_response.csv files in csv_folder and plot |amplitude|
+    vs pulse number.  Files are split by recording type (*.rhs_* vs *.edf_*)
+    into two vertically stacked subplots, one for RHS and one for EDF.
+    Each subplot shows all responses as a scatter (dark grey) with a purple
+    mean ± SD band.
+
+    Parameters
+    ----------
+    csv_folder : str
+        Directory containing *_direct_response.csv files.
+    output_folder : str | None
+        If provided (and save=True), saves the figure there.
+    save : bool
+        If True and output_folder is set, saves instead of showing.
+    normalized : bool
+        If True, normalize each channel's amplitudes to [0, 1] before plotting.
+    n_pulses : int
+        Only include the first n_pulses pulse indices in the analysis (default 50).
+    """
+    import os
+    import glob
+    import pandas as pd
+
+    pattern   = os.path.join(csv_folder, '*_direct_response.csv')
+    csv_files = sorted(glob.glob(pattern))
+    if not csv_files:
+        print(f"[plot_amplitudes_vs_pulse] No *_direct_response.csv files found in {csv_folder}")
+        return
+
+    groups = {'Intact': [], 'Ex-vivo': []}
+    n_files = {'Intact': 0, 'Ex-vivo': 0}
+
+    for path in csv_files:
+        fname = os.path.basename(path).lower()
+        if '.rhs_' in fname:
+            key = 'Intact'
+        elif '.edf_' in fname:
+            key = 'Ex-vivo'
+        else:
+            continue
+        df    = pd.read_csv(path)
+        valid = df.dropna(subset=['amplitude_mV', 'pulse_index']).copy()
+        if valid.empty:
+            continue
+        valid['amplitude_uV'] = valid['amplitude_mV'].abs() * 1000
+        valid = valid[valid['pulse_index'] < n_pulses]
+        if valid.empty:
+            continue
+        valid['amplitude_uV'] = valid['amplitude_uV'].fillna(0)
+        if normalized and 'channel' in valid.columns:
+            ch_max = valid.groupby('channel')['amplitude_uV'].transform('max')
+            valid['amplitude_uV'] = valid['amplitude_uV'] / ch_max.where(ch_max != 0, 1)
+        groups[key].append(valid[['pulse_index', 'amplitude_uV']])
+        n_files[key] += 1
+
+    clr_scatter = '#404040'
+    clr_purple  = '#7b2d8b'
+    clr_shade   = '#c39bd3'
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=False)
+
+    for ax, (label, frames) in zip(axes, groups.items()):
+        ax.set_title(label, fontsize=10, loc='left', pad=4)
+        ax.spines[['top', 'right']].set_visible(False)
+        ylabel = 'Normalized amplitude (0–1)' if normalized else '|Amplitude| (µV)'
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.tick_params(labelsize=8)
+
+        if not frames:
+            ax.text(0.5, 0.5, 'No data', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=9, color='grey')
+            continue
+
+        data = pd.concat(frames, ignore_index=True)
+
+        stats = (
+            data.groupby('pulse_index')['amplitude_uV']
+            .agg(['mean', 'std'])
+            .reset_index()
+            .sort_values('pulse_index')
+        )
+        p_mean = stats['pulse_index'].values
+        mean   = stats['mean'].values
+        std    = stats['std'].fillna(0).values
+
+        ax.scatter(data['pulse_index'].values, data['amplitude_uV'].values,
+                   color=clr_scatter, s=12, alpha=0.4, linewidths=0,
+                   zorder=2, label='All responses')
+        ax.fill_between(p_mean, mean - std, mean + std,
+                        color=clr_shade, alpha=0.45, zorder=3, label='Mean ± SD')
+        ax.plot(p_mean, mean, color=clr_purple, linewidth=1.8,
+                zorder=4, label='Mean')
+
+        ax.set_xlim(left=0)
+        ax.text(
+            0.99, 0.97,
+            f'N files = {n_files[label]}\nN responses = {len(data)}',
+            transform=ax.transAxes,
+            fontsize=7, va='top', ha='right', color='grey',
+        )
+        ax.legend(fontsize=7, frameon=False, loc='upper right',
+                  bbox_to_anchor=(0.99, 0.82))
+
+    axes[-1].set_xlabel('Pulse #', fontsize=10)
+
+    plt.tight_layout()
+    if save and output_folder:
+        os.makedirs(output_folder, exist_ok=True)
+        fig.savefig(os.path.join(output_folder, 'amplitudes_vs_pulse.png'),
+                    dpi=150, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_indirect_response_raster(
+    rec,
+    save: bool = True,
+    output_folder: str | None = None,
+) -> None:
+    """
+    Clean raster plot of indirect (network-driven) responses.
+
+    Each row is one electrode; each tick is one detected spike.
+    Stimulation onsets are marked with red triangles above the raster.
+
+    Parameters
+    ----------
+    rec : RetinalRecording
+        Must have rec.indirect_response populated (call
+        rec.detect_indirect_response() first).
+    save : bool
+        Save to output_folder when True (default). Show interactively otherwise.
+    output_folder : str | None
+        Directory for the saved figure. Ignored when save is False.
+    """
+    df = rec.indirect_response
+    if df is None or df.empty:
+        print("[plot_indirect_response_raster] No indirect response data — skipping.")
+        return
+
+    times      = np.arange(rec.n_samples) / rec.sample_rate
+    stim_times = times[rec.stim_indices]
+    ch_names   = rec.channel_names
+    n_ch       = len(ch_names)
+    ch_to_row  = {ch: i for i, ch in enumerate(ch_names)}
+
+    # Group spike sample indices by channel
+    spikes_by_ch: dict[str, np.ndarray] = {
+        ch: df.loc[df['channel'] == ch, 'spike_index'].values
+        for ch in ch_names
+    }
+
+    x_max = float(stim_times.max()) + 1.0 if len(stim_times) else times[-1]
+
+    fig, ax = plt.subplots(figsize=(14, max(4, n_ch * 0.22)))
+
+    for ch, row in ch_to_row.items():
+        idx = spikes_by_ch.get(ch, np.array([]))
+        if len(idx):
+            t_spikes = times[idx[idx < rec.n_samples]]
+            ax.vlines(t_spikes, row + 0.1, row + 0.9,
+                      color='black', linewidth=0.6)
+
+    # Stimulation markers
+    ax.scatter(stim_times, np.full_like(stim_times, n_ch + 0.5),
+               color='#b22222', marker='v', s=18, zorder=5,
+               clip_on=False, label='Stimulation')
+
+    ax.set_xlim(0, x_max)
+    ax.set_ylim(0, n_ch + 1)
+    ax.set_yticks(np.arange(n_ch) + 0.5)
+    ax.set_yticklabels(ch_names, fontsize=6)
+    ax.set_xlabel('Time (s)', fontsize=10)
+    ax.set_ylabel('Electrode', fontsize=10)
+    ax.tick_params(axis='x', labelsize=9)
+    ax.tick_params(axis='y', length=0)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.legend(fontsize=8, frameon=False, loc='upper right')
+
+    plt.tight_layout()
+
+    if save and output_folder:
+        fig.savefig(
+            f'{output_folder}/{rec.file_name}_indirect_raster.png',
+            dpi=150, bbox_inches='tight',
+        )
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_channel_amplitude_std_by_type(
+    csv_folder: str,
+    output_folder: str | None = None,
+    save: bool = True,
+) -> None:
+    """
+    For every channel in every *_direct_response.csv file, compute the std
+    of |amplitude| across all detected pulses.  Plot one point per channel
+    as a strip plot: x = recording type (RHS | EDF), y = std.
+    RHS in dark purple, EDF in light purple.
+
+    Parameters
+    ----------
+    csv_folder : str
+        Directory containing *_direct_response.csv files.
+    output_folder : str | None
+        If provided (and save=True), saves the figure there.
+    save : bool
+        If True and output_folder is set, saves instead of showing.
+    """
+    import os
+    import glob
+    import pandas as pd
+
+    pattern   = os.path.join(csv_folder, '*_direct_response.csv')
+    csv_files = sorted(glob.glob(pattern))
+    if not csv_files:
+        print(f"[plot_channel_amplitude_std_by_type] No *_direct_response.csv files found in {csv_folder}")
+        return
+
+    clr_rhs = '#6a0dad'   # dark purple
+    clr_edf = '#c39bd3'   # light purple
+
+    stds      = {'RHS': [], 'EDF': []}
+    n_retinas = {'RHS': 0,  'EDF': 0}
+
+    for path in csv_files:
+        fname = os.path.basename(path).lower()
+        if '.rhs_' in fname:
+            key = 'RHS'
+        elif '.edf_' in fname:
+            key = 'EDF'
+        else:
+            continue
+
+        df    = pd.read_csv(path)
+        valid = df.dropna(subset=['amplitude_mV'])
+        if valid.empty:
+            continue
+        valid = valid.copy()
+        valid['amplitude_uV'] = valid['amplitude_mV'].abs() * 1000
+
+        file_contributed = False
+        for _ch, ch_df in valid.groupby('channel'):
+            amps = ch_df['amplitude_uV'].values
+            if len(amps) < 2:
+                continue
+            stds[key].append(float(np.std(amps, ddof=1)))
+            file_contributed = True
+        if file_contributed:
+            n_retinas[key] += 1
+
+    display_labels = {'RHS': 'Intact', 'EDF': 'Ex-vivo'}
+    groups = [('RHS', clr_rhs), ('EDF', clr_edf)]
+
+    fig, ax = plt.subplots(figsize=(4, 5))
+
+    rng = np.random.default_rng(0)
+
+    for x_pos, (key, clr) in enumerate(groups):
+        vals = np.array(stds[key])
+        if len(vals) == 0:
+            continue
+        jitter = rng.uniform(-0.15, 0.15, size=len(vals))
+        ax.scatter(x_pos + jitter, vals, color=clr, s=25, alpha=0.7,
+                   linewidths=0,
+                   label=f'{display_labels[key]}  {n_retinas[key]} retinas, {len(vals)} ch')
+        ax.plot([x_pos - 0.2, x_pos + 0.2], [np.median(vals)] * 2,
+                color=clr, linewidth=2, solid_capstyle='round')
+
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(['Intact', 'Ex-vivo'], fontsize=10)
+    ax.set_xlim(-0.5, 1.5)
+    ax.set_ylabel('SD of |Amplitude| (µV)', fontsize=10)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.tick_params(labelsize=9)
+    ax.legend(fontsize=7, frameon=False)
+
+    plt.tight_layout()
+    if save and output_folder:
+        os.makedirs(output_folder, exist_ok=True)
+        fig.savefig(os.path.join(output_folder, 'amplitude_std_vs_mean.png'),
+                    dpi=150, bbox_inches='tight')
         plt.close(fig)
     else:
         plt.show()

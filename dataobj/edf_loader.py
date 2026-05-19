@@ -7,6 +7,7 @@ RetinalRecording.
 
 from __future__ import annotations
 import os
+import re
 import warnings
 import numpy as np
 import pandas as pd
@@ -122,11 +123,17 @@ def _load_stim_from_txt(
     txt_path  = os.path.join(directory, base_name + '.txt')
 
     if not os.path.isfile(txt_path):
-        warnings.warn(
-            f"Companion .txt not found: '{txt_path}'. stim_indices=None.",
-            UserWarning, stacklevel=3,
-        )
-        return None
+        # retry after stripping the '_B-00071' suffix
+        fallback_base = re.sub(r'_B-\d+$', '', base_name)
+        txt_path_fallback = os.path.join(directory, fallback_base + '.txt')
+        if os.path.isfile(txt_path_fallback):
+            txt_path = txt_path_fallback
+        else:
+            warnings.warn(
+                f"Companion .txt not found: '{txt_path}'. stim_indices=None.",
+                UserWarning, stacklevel=3,
+            )
+            return None
 
     try:
         with open(txt_path, 'r') as fh:
