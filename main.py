@@ -25,7 +25,7 @@ RESULTS_DIR = 'Results'
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch04_300us_50us_7uA_1Hz_250528_121450\Ch04_300us_50us_7uA_1Hz_250528_121450.rhs'
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina5\Ch04_300us_50us_7uA_1Hz_250528_142150\Ch04_300us_50us_7uA_1Hz_250528_142150.rhs'
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina1\7uA\Ch04_300us_50us_1Hz_250525_095035\Ch04_300us_50us_1Hz_250525_095135.rhs'
-# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina4\Ch04_300us_50us_7uA_1Hz_250525_131107\Ch04_300us_50us_7uA_1Hz_250525_131107.rhs'
+RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina4\Ch04_300us_50us_7uA_1Hz_250525_131107\Ch04_300us_50us_7uA_1Hz_250525_131107.rhs'
 
 # 10 Hz
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina1\Ch05_300us_50us_7uA_10Hz_250528_092403\Ch05_300us_50us_7uA_10Hz_250528_092403.rhs'
@@ -39,7 +39,7 @@ RESULTS_DIR = 'Results'
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina3\Ch01_300us_50us_7uA_10Hz_250528_113243\Ch01_300us_50us_7uA_10Hz_250528_113243.rhs'
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.28 E14\Retina5\Ch04_300us_50us_7uA_20Hz_250528_142312\Ch04_300us_50us_7uA_20Hz_250528_142312.rhs'
 # RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina4\Ch04_300us_50us_7uA_20Hz_250525_131217\Ch04_300us_50us_7uA_20Hz_250525_131217.rhs'
-RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina1\7uA\Ch04_300us_50us_20Hz_250525_095009\Ch04_300us_50us_20Hz_250525_095009.rhs'
+# RHS_FILE1            = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.05.25 E14\Retina1\7uA\Ch04_300us_50us_20Hz_250525_095009\Ch04_300us_50us_20Hz_250525_095009.rhs'
 
 #
 # No retina:
@@ -92,16 +92,16 @@ if __name__ == '__main__':
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     # ── MEA EDF ──────────────────────────────────────────────
-    print()
-    print('=' * 60)
-    print('MEA EDF')
-    print('=' * 60)
-    edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
-    edf_rec.filter()
-    edf_rec.blank(duration_ms=BLANK_MS, source='filtered_data')
-
-    edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=DIRECT_THRESHOLD_MV)
-    edf_rec.direct_response.to_csv(os.path.join(RESULTS_DIR, f'{edf_rec.file_name}_direct_response.csv'), index=False)
+    # print()
+    # print('=' * 60)
+    # print('MEA EDF')
+    # print('=' * 60)
+    # edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
+    # edf_rec.filter()
+    # edf_rec.blank(duration_ms=BLANK_MS, source='filtered_data')
+    #
+    # edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=DIRECT_THRESHOLD_MV)
+    # edf_rec.direct_response.to_csv(os.path.join(RESULTS_DIR, f'{edf_rec.file_name}_direct_response.csv'), index=False)
 
     # plot_spikes_layout_mea(rec=edf_rec,
     #                     win_size_ms=DIRECT_WIN_MS,
@@ -120,18 +120,18 @@ if __name__ == '__main__':
 
 
     # ── Intan RHS ────────────────────────────────────────────
-    # print('=' * 60)
-    # print('Intan RHS')
-    # print('=' * 60)
-    # rhs_rec1 = load_rhs(RHS_FILE1, stim_threshold=470)
-    #
-    # # rhs_rec1.blank(duration_ms=BLANK_MS, source='raw_data')
-    # rhs_rec1.detect_direct_response(win_size_ms=10,
-    #                                threshold=15,
-    #                                data_type='raw',
-    #                                plot=True,
-    #                                output_folder=RESULTS_DIR)
-    # rhs_rec1.direct_response.to_csv(os.path.join(RESULTS_DIR, f'{rhs_rec1.file_name}_direct_response.csv'), index=False)
+    print('=' * 60)
+    print('Intan RHS')
+    print('=' * 60)
+    rhs_rec1 = load_rhs(RHS_FILE1, stim_threshold=470)
+
+    # rhs_rec1.blank(duration_ms=BLANK_MS, source='raw_data')
+    rhs_rec1.detect_direct_response(win_size_ms=10,
+                                   threshold=15,
+                                   data_type='raw',
+                                   plot=True,
+                                   output_folder=RESULTS_DIR)
+    rhs_rec1.direct_response.to_csv(os.path.join(RESULTS_DIR, f'{rhs_rec1.file_name}_direct_response.csv'), index=False)
 
     # plot_spikes_layout_probe16(rec=rhs_rec1,
     #                            win_size_ms=20,

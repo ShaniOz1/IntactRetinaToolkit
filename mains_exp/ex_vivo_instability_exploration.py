@@ -24,7 +24,7 @@ RESULTS_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\ex_vi
 
 # --- Direct response ---
 DIRECT_WIN_MS       = 10.0
-BLANK_MS            = 2.5
+BLANK_MS            = 1.0
 DIRECT_THRESHOLD_MV = 0.2  # set to None to compute threshold from data
 INTERACTIVE         = False  # set to True to review/adjust threshold per file before saving
 
