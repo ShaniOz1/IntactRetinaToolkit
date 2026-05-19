@@ -1,9 +1,15 @@
 """
-ex_vivo_instability_exploration_analyse.py
+glucose_instability_exploration_analyse.py
 ==========================================
-Reads all *_direct_response.csv files from RESULTS_DIR, computes per-channel
-response efficiency, and plots a heatmap of efficiency vs stimulation current
-and frequency.
+Reads all *_direct_response.csv files from RESULTS_DIR (glucose experiment),
+computes per-channel response efficiency, and plots a heatmap of efficiency
+vs stimulation current and frequency — separated by experimental phase.
+
+Phases are inferred from the timestamp embedded in each filename:
+  Phase 1 – normal (pre)    : recordings before noon  (11:xx)
+  Phase 2 – low glucose     : 12:00–12:30
+  Phase 3 – normal (post)   : 12:30–13:00
+  Phase 4 – normal (extended): 13:xx
 
 Response efficiency (per channel, per file):
   - Normalize each detected amplitude by the channel's max amplitude.
@@ -23,9 +29,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-RESULTS_DIR      = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\ex_vivo_all'
-MIN_AMP_MV       = 1.0   # channels with max amp < 1 mV are excluded
-SEPARATE_RETINAS = True  # True → one figure per retina; False → all combined
+RESULTS_DIR     = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\ex_vivo_glucose'
+MIN_AMP_MV      = 1.0   # channels with max amp < 1 mV are excluded
+SEPARATE_PHASES = True  # True → one figure per phase; False → all combined
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -45,21 +51,21 @@ def parse_current_freq(filename):
     return current, float(freq.group(1))
 
 
-def retina_label(filename):
-    """Map a CSV filename to a retina identifier."""
-    if '2024-11-17' in filename:
-        return '2024.11.17'
-    if '2024-11-20' in filename:
-        return '2024.11.20'
-    if '2025-11-02' in filename:
-        if 'J6' in filename:
-            return '2025.11.02 J6'
-        if 'J9' in filename:
-            return '2025.11.02 J9'
-        return '2025.11.02'
-    if '2025-11-12' in filename:
-        return '2025.11.12'
-    return 'unknown'
+def phase_label(filename):
+    """Map a CSV filename to its experimental phase based on the timestamp."""
+    m = re.search(r'T(\d{2})-(\d{2})', filename)
+    if not m:
+        tag = 'low' if filename.startswith('low_') else 'normal'
+        return f'{tag}_unknown'
+    t = int(m.group(1)) * 60 + int(m.group(2))
+    if t < 12 * 60:
+        return 'Phase 1 – normal (pre)'
+    elif t < 12 * 60 + 30:
+        return 'Phase 2 – low glucose'
+    elif t < 13 * 60:
+        return 'Phase 3 – normal (post)'
+    else:
+        return 'Phase 4 – normal (extended)'
 
 
 def channel_max_amplitudes(csv_path):
@@ -118,7 +124,7 @@ if __name__ == '__main__':
         exit()
 
     # {retina_label: {(current_uA, freq_Hz): [(efficiency, max_amp_mV), ...]}}
-    data_by_retina: dict[str, dict[tuple, list]] = {}
+    data_by_phase: dict[str, dict[tuple, list]] = {}
 
     for path in csv_files:
         fname = os.path.basename(path)
@@ -131,10 +137,10 @@ if __name__ == '__main__':
         if not results:
             continue
 
-        label = retina_label(fname) if SEPARATE_RETINAS else 'all'
-        data_by_retina.setdefault(label, {}).setdefault((current, freq), []).extend(results)
+        label = phase_label(fname) if SEPARATE_PHASES else 'all'
+        data_by_phase.setdefault(label, {}).setdefault((current, freq), []).extend(results)
 
-    if not data_by_retina:
+    if not data_by_phase:
         print('No qualifying channels found.')
         exit()
 
@@ -155,7 +161,7 @@ if __name__ == '__main__':
 
         # linear scale
         ax = axes_dist[0]
-        ax.hist(all_max_amps, bins=120, color='steelblue', edgecolor='white', linewidth=0.4)
+        ax.hist(all_max_amps, bins=60, color='steelblue', edgecolor='white', linewidth=0.4)
         for lo, hi, label in [(0.05, 0.25, '0.05–0.25'), (0.25, 0.5, '0.25–0.5'), (1.0, None, '>1.0')]:
             ax.axvline(lo, color='tomato', lw=1, ls='--', alpha=0.8)
             if hi is not None:
@@ -270,8 +276,8 @@ if __name__ == '__main__':
         plt.close(fig)
         print(f'Saved → {out_path}')
 
-    for retina, data in sorted(data_by_retina.items()):
-        suffix   = retina if SEPARATE_RETINAS else ''
-        tag      = f'_{retina.replace(" ", "_")}' if SEPARATE_RETINAS else ''
+    for phase, data in sorted(data_by_phase.items()):
+        suffix = phase if SEPARATE_PHASES else ''
+        tag    = f'_{phase.replace(" ", "_").replace("–", "-")}' if SEPARATE_PHASES else ''
         # _plot_heatmap(data, np.median, 'median', f'response_efficiency_heatmap_median{tag}.png', suffix)
         _plot_heatmap(data, np.mean, 'mean', f'response_efficiency_heatmap_mean{tag}.png', suffix)

@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 # False → read from per-frequency subdirectories; freq comes from the dict key
 USE_INTACT_ALL = True
 
-INTACT_ALL_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_all'
+INTACT_ALL_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_all3_seperate_retinas'
 
 SOURCE_DIRS = {
      1: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\1hz',
@@ -34,11 +34,21 @@ SOURCE_DIRS = {
     20: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\20hz',
 }
 
-RESULTS_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\intact'
-MIN_AMP_MV  = 0
+RESULTS_DIR      = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\intact'
+MIN_AMP_MV       = 0
+SEPARATE_RETINAS = True  # True → one figure per retina; False → all combined
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+def retina_label(filename):
+    """Return a unique retina identifier from the CSV filename: '<date> <RetinaX>'."""
+    m_retina = re.search(r'(Retina\d+)', filename, re.IGNORECASE)
+    m_date   = re.search(r'(\d{6})', filename)
+    retina   = m_retina.group(1) if m_retina else 'unknown'
+    date     = m_date.group(1)   if m_date   else ''
+    return f'{date} {retina}' if date else retina
+
 
 def channel_max_amplitudes(csv_path):
     """Return list of per-channel max amplitude (mV) across all pulses."""
@@ -117,17 +127,18 @@ if __name__ == '__main__':
     print(f'Using {len(csv_entries)} CSV files.')
 
     # {(current_uA, freq_Hz): [(efficiency, max_amp_mV), ...]}
-    data: dict[tuple, list] = {}
+    data_by_retina: dict[str, dict[tuple, list]] = {}
     files_used = 0
 
     for path, current, freq in csv_entries:
         results = channel_efficiencies(path)
         if not results:
             continue
-        data.setdefault((current, freq), []).extend(results)
+        label = retina_label(os.path.basename(path)) if SEPARATE_RETINAS else 'all'
+        data_by_retina.setdefault(label, {}).setdefault((current, freq), []).extend(results)
         files_used += 1
 
-    if not data:
+    if not data_by_retina:
         print('No qualifying channels found.')
         exit()
 
@@ -174,20 +185,17 @@ if __name__ == '__main__':
         print(f'Saved → {out_dist}')
 
     # ── heatmap ───────────────────────────────────────────────────────────────
-    currents = sorted({k[0] for k in data})
-    freqs    = sorted({k[1] for k in data})
-    cur_idx  = {c: i for i, c in enumerate(currents)}
-    freq_idx = {f: i for i, f in enumerate(freqs)}
-
     amp_ranges = [
         (None, 0.5,  '< 0.5 mV'),
         (0.5,  None, '≥ 0.5 mV'),
     ]
 
-    all_amps = [amp for vals in data.values() for _, amp in vals]
-    amp_min, amp_max = np.min(all_amps), np.max(all_amps)
+    def _plot_heatmap(data, agg_fn, agg_name, out_name, title_suffix=''):
+        currents = sorted({k[0] for k in data})
+        freqs    = sorted({k[1] for k in data})
+        cur_idx  = {c: i for i, c in enumerate(currents)}
+        freq_idx = {f: i for i, f in enumerate(freqs)}
 
-    def _plot_heatmap(agg_fn, agg_name, out_name):
         n_ranges = len(amp_ranges)
         n_rows = 2 if n_ranges > 3 else 1
         n_cols = math.ceil(n_ranges / n_rows)
@@ -237,8 +245,10 @@ if __name__ == '__main__':
                                 color='white' if matrix[r, c] > 0.6 else 'black')
             last_im = im
 
-        # fig.suptitle(f'Response efficiency — {agg_name}  '
-        #              f'(amp range: {amp_min:.3f} – {amp_max:.3f} mV)', fontsize=11)
+        title = f'{agg_name}'
+        if title_suffix:
+            title += f'  [{title_suffix}]'
+        fig.suptitle(title, fontsize=6)
         plt.tight_layout()
         plt.subplots_adjust(wspace=0.01)
 
@@ -248,5 +258,8 @@ if __name__ == '__main__':
         plt.close(fig)
         print(f'Saved → {out_path}')
 
-    # _plot_heatmap(np.median, 'median', 'response_efficiency_heatmap_median.png')
-    _plot_heatmap(np.mean,   'mean',   'response_efficiency_heatmap_mean.png')
+    for retina, data in sorted(data_by_retina.items()):
+        suffix = retina if SEPARATE_RETINAS else ''
+        tag    = f'_{retina.replace(" ", "_")}' if SEPARATE_RETINAS else ''
+        # _plot_heatmap(data, np.median, 'median', f'response_efficiency_heatmap_median{tag}.png', suffix)
+        _plot_heatmap(data, np.mean, 'mean', f'response_efficiency_heatmap_mean{tag}.png', suffix)
