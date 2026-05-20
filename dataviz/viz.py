@@ -657,10 +657,10 @@ def plot_spikes_layout_mea(
         if threshold is not None:
             ax.axhline(-threshold, color='grey', linewidth=0.5, linestyle='--')
 
-        # Channel label — top-left corner
+        # Channel label — top-centre
         short_label = ch_name.split()[-1].upper() if ' ' in ch_name else ch_name.lower()
-        ax.text(0.05, 0.95, short_label, transform=ax.transAxes,
-                fontsize=6, va='top', ha='left', color='dimgrey')
+        ax.text(0.5, 0.95, short_label, transform=ax.transAxes,
+                fontsize=6, va='top', ha='center', color='dimgrey')
 
         # Red dot for stimulation electrode
         if stim_pos is not None and (row, col) == stim_pos:

@@ -14,7 +14,7 @@ import traceback
 from dataobj import load_rhs
 
 BASE_DIR     = r'C:\Shani\SoftC prob\16Ch prob experiments'
-RESULTS_BASE = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_all3'
+RESULTS_BASE = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_all4_sorted'
 
 # Experiment date folders to include (must start with one of these prefixes)
 EXPERIMENT_DATES = [
@@ -92,10 +92,48 @@ if __name__ == '__main__':
             rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS,
                                        threshold=DIRECT_THRESHOLD_MV,
                                        data_type='raw',
-                                       plot=False,
-                                       output_folder=RESULTS_BASE)
-            rec.direct_response.to_csv(out_path, index=False)
-            print(f'    saved → {out_path}')
+                                       plot=True,
+                                       output_folder=None)
+
+            df = rec.direct_response
+            if df is None or df.empty:
+                print('    No responses detected — skipping.')
+                skipped.append(path)
+                continue
+
+            available = sorted(df['channel'].apply(lambda c: c.split()[-1].upper()).unique())
+            for idx, ch in enumerate(available):
+                print(f'      [{idx}] {ch}')
+            raw_input_str = input('    Indices to include (space-separated), or Enter to skip: ').strip()
+
+            if not raw_input_str:
+                print('    No channels specified — skipping.')
+                skipped.append(path)
+                continue
+
+            try:
+                indices  = [int(x) for x in raw_input_str.split()]
+                selected = {available[i] for i in indices if 0 <= i < len(available)}
+            except ValueError:
+                print('    Invalid input — skipping.')
+                skipped.append(path)
+                continue
+
+            if not selected:
+                print('    No valid indices — skipping.')
+                skipped.append(path)
+                continue
+
+            df_filtered = df[df['channel'].apply(lambda c: c.split()[-1].upper() in selected)]
+
+            if df_filtered.empty:
+                print('    No matching channels found — skipping.')
+                skipped.append(path)
+                continue
+
+            df_filtered.to_csv(out_path, index=False)
+            print(f'    saved → {out_path}  (channels: {", ".join(sorted(selected))})')
+
         except Exception:
             print(f'    ERROR — skipping')
             traceback.print_exc()

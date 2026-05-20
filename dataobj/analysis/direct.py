@@ -681,7 +681,7 @@ def _run_rhs_raw(
     for ch_idx, ch_name in enumerate(rec.channel_names):
         if stim_ch_name and ch_name == stim_ch_name:
             continue
-        # ch_idx = 15
+        # ch_idx = 1
         raw_ch = raw_data[ch_idx, :]
         ch_threshold = (threshold if threshold is not None
                         else _compute_threshold(

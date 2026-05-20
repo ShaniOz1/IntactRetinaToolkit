@@ -14,7 +14,7 @@ import traceback
 from dataobj import load_edf
 
 SOURCE_DIR   = r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1'
-RESULTS_DIR  = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\ex_vivo_glucose'
+RESULTS_DIR  = r'/Results/ex_vivo_glucose'
 STIM_ELECTRODE      = 'G10'
 
 # ============================================================

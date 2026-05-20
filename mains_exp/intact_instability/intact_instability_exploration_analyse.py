@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 # ── choose data source ────────────────────────────────────────────────────────
 # True  → read from a single flat directory; freq is parsed from each filename
 # False → read from per-frequency subdirectories; freq comes from the dict key
-USE_INTACT_ALL = True
+USE_INTACT_ALL = False
 
 INTACT_ALL_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_all3_seperate_retinas'
 
@@ -34,20 +34,21 @@ SOURCE_DIRS = {
     20: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\20hz',
 }
 
-RESULTS_DIR      = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\intact'
+RESULTS_DIR      = r'/Results/intact'
 MIN_AMP_MV       = 0
-SEPARATE_RETINAS = True  # True → one figure per retina; False → all combined
+SEPARATE_RETINAS = False  # True → one figure per retina; False → all combined
+PULSE_LIMIT      = 100   # max pulses shown in scatter figure
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def retina_label(filename):
-    """Return a unique retina identifier from the CSV filename: '<date> <RetinaX>'."""
+    """Return a unique retina+date identifier, e.g. 'Retina1_250525'."""
     m_retina = re.search(r'(Retina\d+)', filename, re.IGNORECASE)
-    m_date   = re.search(r'(\d{6})', filename)
+    m_date   = re.search(r'_(\d{6})_', filename)
     retina   = m_retina.group(1) if m_retina else 'unknown'
     date     = m_date.group(1)   if m_date   else ''
-    return f'{date} {retina}' if date else retina
+    return f'{retina}_{date}' if date else retina
 
 
 def channel_max_amplitudes(csv_path):
@@ -63,6 +64,44 @@ def channel_max_amplitudes(csv_path):
         if not pd.isna(max_amp):
             maxes.append(max_amp)
     return maxes
+
+
+def channel_norm_slope(csv_path):
+    """
+    Returns list of (decay_pct, max_amp_mV) per channel.
+    decay_pct = (1 - mean(last 3 non-NaN amps) / mean(first 3 non-NaN amps)) * 100.
+    Channels with fewer than 3 detected pulses are skipped.
+    """
+    df = pd.read_csv(csv_path)
+    if df.empty or 'amplitude_mV' not in df.columns or 'pulse_index' not in df.columns:
+        return []
+    df = df.dropna(subset=['pulse_index']).copy()
+    df['amplitude_mV'] = df['amplitude_mV'].abs()
+
+    results = []
+    for _, ch_df in df.groupby('channel'):
+        per_pulse  = ch_df.groupby('pulse_index')['amplitude_mV'].max()
+        detected   = per_pulse.dropna()
+        detected   = detected[detected > 0].sort_index()
+        if len(detected) < 3:
+            continue
+        mean_first = float(detected.iloc[:3].mean())
+        if mean_first == 0:
+            continue
+        mean_last  = float(detected.iloc[-3:].mean())
+        decay_pct  = (1 - mean_last / mean_first) * 100
+        results.append((decay_pct, float(per_pulse.max())))
+    return results
+
+
+def collect_raw_pulses(csv_path):
+    """Return DataFrame (channel, pulse_index, amplitude_mV) for all channels."""
+    df = pd.read_csv(csv_path)
+    if df.empty or 'amplitude_mV' not in df.columns or 'pulse_index' not in df.columns:
+        return pd.DataFrame()
+    df = df.dropna(subset=['pulse_index']).copy()
+    df['amplitude_mV'] = df['amplitude_mV'].abs()
+    return df[['channel', 'pulse_index', 'amplitude_mV']]
 
 
 def channel_efficiencies(csv_path):
@@ -128,15 +167,30 @@ if __name__ == '__main__':
 
     # {(current_uA, freq_Hz): [(efficiency, max_amp_mV), ...]}
     data_by_retina: dict[str, dict[tuple, list]] = {}
+    data_by_retina_cv: dict[str, dict[tuple, list]] = {}
+    # [(retina, short_channel, current, freq, pulse_df)] for scatter figure
+    pulse_entries = []
     files_used = 0
 
     for path, current, freq in csv_entries:
+        rlabel = retina_label(os.path.basename(path))
+        if rlabel == 'unknown':
+            continue
+
         results = channel_efficiencies(path)
         if not results:
             continue
-        label = retina_label(os.path.basename(path)) if SEPARATE_RETINAS else 'all'
+        label = rlabel if SEPARATE_RETINAS else 'all'
         data_by_retina.setdefault(label, {}).setdefault((current, freq), []).extend(results)
         files_used += 1
+
+        results_cv = channel_norm_slope(path)
+        data_by_retina_cv.setdefault(label, {}).setdefault((current, freq), []).extend(results_cv)
+
+        raw = collect_raw_pulses(path)
+        for ch, ch_df in raw.groupby('channel'):
+            short_ch = str(ch).split()[-1].upper()
+            pulse_entries.append((rlabel, short_ch, current, freq, ch_df.copy()))
 
     if not data_by_retina:
         print('No qualifying channels found.')
@@ -186,11 +240,11 @@ if __name__ == '__main__':
 
     # ── heatmap ───────────────────────────────────────────────────────────────
     amp_ranges = [
-        (None, 0.5,  '< 0.5 mV'),
-        (0.5,  None, '≥ 0.5 mV'),
+        # (None, 0.5,  '< 0.5 mV'),
+        (0.01,  None, ' '),
     ]
 
-    def _plot_heatmap(data, agg_fn, agg_name, out_name, title_suffix=''):
+    def _plot_heatmap(data, agg_fn, agg_name, out_name, title_suffix='', vmax=1):
         currents = sorted({k[0] for k in data})
         freqs    = sorted({k[1] for k in data})
         cur_idx  = {c: i for i, c in enumerate(currents)}
@@ -220,7 +274,7 @@ if __name__ == '__main__':
                 counts[r, c] = len(effs)
 
             im = ax.imshow(matrix, aspect='auto', cmap='Purples',
-                           vmin=0, vmax=1, origin='lower')
+                           vmin=0, vmax=(float(np.nanmax(matrix)) if vmax is None else vmax), origin='lower')
 
             ax.set_title(label, fontsize=8, loc='left')
             ax.set_xticks(range(len(currents)))
@@ -263,3 +317,105 @@ if __name__ == '__main__':
         tag    = f'_{retina.replace(" ", "_")}' if SEPARATE_RETINAS else ''
         # _plot_heatmap(data, np.median, 'median', f'response_efficiency_heatmap_median{tag}.png', suffix)
         _plot_heatmap(data, np.mean, 'mean', f'response_efficiency_heatmap_mean{tag}.png', suffix)
+
+    for retina, data in sorted(data_by_retina_cv.items()):
+        suffix = retina if SEPARATE_RETINAS else ''
+        tag    = f'_{retina.replace(" ", "_")}' if SEPARATE_RETINAS else ''
+        _plot_heatmap(data, np.mean, 'amplitude decay (%)',
+                      f'response_efficiency_heatmap_normslope{tag}.png', suffix, vmax=100)
+
+    # ── pulse # vs amplitude scatter ──────────────────────────────────────────
+    if pulse_entries:
+        pulse_entries.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+
+        # keep only entries that have at least one detected (non-zero) response
+        pulse_entries = [
+            e for e in pulse_entries
+            if not e[4][e[4]['amplitude_mV'] > 0].empty
+        ]
+
+        retina_order = sorted({e[0] for e in pulse_entries})
+        n_ret        = len(retina_order)
+        raw_colors   = plt.cm.Pastel1(np.linspace(0, 1, max(n_ret, 1)))
+        retina_color = {r: raw_colors[i] for i, r in enumerate(retina_order)}
+
+        n_sub  = len(pulse_entries)
+        n_cols = min(n_sub, 10)
+        n_rows = math.ceil(n_sub / n_cols)
+
+        fig_sc, axes_sc = plt.subplots(
+            n_rows, n_cols,
+            figsize=(n_cols * 1.4, n_rows * 1.4),
+            squeeze=False,
+        )
+
+        for idx, (retina, short_ch, cur, freq, ch_df) in enumerate(pulse_entries):
+            ax = axes_sc[idx // n_cols][idx % n_cols]
+            bg = list(plt.matplotlib.colors.to_rgba(retina_color[retina]))
+            bg[3] = 0.5
+            ax.set_facecolor(bg)
+            ch_sub    = ch_df[ch_df['pulse_index'] < PULSE_LIMIT].dropna(subset=['amplitude_mV'])
+            ch_sub    = ch_sub[ch_sub['amplitude_mV'] > 0]
+            if ch_sub.empty:
+                continue
+            n_pulses  = int(ch_sub['pulse_index'].max()) + 1
+            per_pulse = (ch_sub.groupby('pulse_index')['amplitude_mV'].max()
+                         .reindex(range(n_pulses), fill_value=0))
+            ax.scatter(per_pulse.index, per_pulse.values,
+                       s=2, color='black', linewidths=0)
+            ax.set_title(f'{retina}\n{short_ch}  {cur:g}µA {freq:g}Hz',
+                         fontsize=4.5, pad=2)
+            ax.set_xticks([0, PULSE_LIMIT // 2, PULSE_LIMIT])
+            ax.set_xticklabels([0, PULSE_LIMIT // 2, PULSE_LIMIT], fontsize=4)
+            ax.set_ylim(0, 0.5)
+            ax.tick_params(axis='y', labelsize=4, length=2, pad=1)
+            for spine in ax.spines.values():
+                spine.set_linewidth(0.4)
+
+        for idx in range(n_sub, n_rows * n_cols):
+            axes_sc[idx // n_cols][idx % n_cols].set_visible(False)
+
+        fig_sc.text(0.5, 0.01, 'pulse #', ha='center', fontsize=7)
+        fig_sc.text(0.01, 0.5, 'amplitude (mV)', va='center', rotation='vertical', fontsize=7)
+
+        plt.tight_layout(rect=[0.03, 0.03, 1, 1])
+        plt.subplots_adjust(wspace=0.15, hspace=0.55)
+
+        out_sc = os.path.join(RESULTS_DIR, 'pulse_vs_amplitude.png')
+        fig_sc.savefig(out_sc, dpi=150, bbox_inches='tight')
+        plt.show()
+        plt.close(fig_sc)
+        print(f'Saved → {out_sc}')
+
+    # ── amplitude vs pulse # per frequency ───────────────────────────────────
+    if pulse_entries:
+        freqs_all = sorted({e[3] for e in pulse_entries})
+        fig_fq, axes_fq = plt.subplots(
+            1, len(freqs_all),
+            figsize=(len(freqs_all) * 3.0, 2.8),
+            squeeze=False,
+        )
+        for col, freq in enumerate(freqs_all):
+            ax = axes_fq[0][col]
+            for retina, short_ch, cur, f, ch_df in pulse_entries:
+                if f != freq:
+                    continue
+                ch_sub = ch_df[ch_df['amplitude_mV'] > 0].sort_values('pulse_index')
+                if ch_sub.empty:
+                    continue
+                ax.plot(ch_sub['pulse_index'], ch_sub['amplitude_mV'],
+                        linewidth=0.4, alpha=0.5, color='black')
+            ax.set_title(f'{freq:g} Hz', fontsize=8)
+            ax.set_xlabel('pulse #', fontsize=7)
+            if col == 0:
+                ax.set_ylabel('amplitude (mV)', fontsize=7)
+            ax.tick_params(labelsize=6)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+        plt.tight_layout()
+        out_fq = os.path.join(RESULTS_DIR, 'amp_vs_pulse_per_freq.png')
+        fig_fq.savefig(out_fq, dpi=150, bbox_inches='tight')
+        plt.show()
+        plt.close(fig_fq)
+        print(f'Saved → {out_fq}')
