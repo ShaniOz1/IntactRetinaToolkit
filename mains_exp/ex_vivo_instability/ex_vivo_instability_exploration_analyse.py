@@ -151,9 +151,10 @@ def channel_efficiencies(csv_path, allowed_channels=None, pulse_limit=None):
 def channel_norm_slope(csv_path, allowed_channels=None):
     """
     Returns list of (decay_pct, max_amp_mV) per qualifying channel.
-    decay_pct = (1 - mean(last 3 non-NaN amps) / mean(first 3 non-NaN amps)) * 100,
-    using only the first PULSE_LIMIT pulses.
-    Channels with fewer than 3 detected pulses are skipped.
+    decay_pct = (1 - mean(last 3 detected amps) / mean(first 3 detected amps)) * 100,
+    using only the first 100 pulses (indices 0–99).
+    Channels with fewer than 99 pulses (max pulse_index < 98) are skipped.
+    Channels with fewer than 3 detected pulses in the window are skipped.
     """
     df = pd.read_csv(csv_path)
     if df.empty or 'amplitude_mV' not in df.columns or 'pulse_index' not in df.columns:
@@ -169,17 +170,23 @@ def channel_norm_slope(csv_path, allowed_channels=None):
 
     results = []
     for ch, ch_df in df.groupby('channel'):
-        per_pulse  = ch_df.groupby('pulse_index')['amplitude_mV'].max()
-        per_pulse  = per_pulse[per_pulse.index < PULSE_LIMIT]
-        detected   = per_pulse.dropna()
-        detected   = detected[detected > 0].sort_index()
+        per_pulse = ch_df.groupby('pulse_index')['amplitude_mV'].max()
+
+        # require at least 99 pulses (indices 0–98)
+        if per_pulse.index.max() < 98:
+            continue
+
+        per_pulse = per_pulse[per_pulse.index < 100]
+        detected  = per_pulse.dropna()
+        detected  = detected[detected > 0].sort_index()
         if len(detected) < 3:
             continue
+
         mean_first = float(detected.iloc[:3].mean())
         if mean_first == 0:
             continue
-        mean_last  = float(detected.iloc[-3:].mean())
-        decay_pct  = (1 - mean_last / mean_first) * 100
+        mean_last = float(detected.iloc[-3:].mean())
+        decay_pct = (1 - mean_last / mean_first) * 100
         results.append((decay_pct, float(per_pulse.max())))
 
     return results
@@ -365,7 +372,7 @@ if __name__ == '__main__':
                     if not np.isnan(matrix[r, c]):
                         ax.text(c, r, f'{matrix[r, c]:.2f}\n(n={counts[r, c]})',
                                 ha='center', va='center', fontsize=7,
-                                color='white' if matrix[r, c] > 0.6 else 'black')
+                                color='white' if matrix[r, c] / _vmax > 0.6 else 'black')
             last_im = im
 
         title = f'Response efficiency — {agg_name}'
@@ -388,7 +395,7 @@ if __name__ == '__main__':
         suffix   = retina if SEPARATE_RETINAS else ''
         tag      = f'_{retina.replace(" ", "_")}' if SEPARATE_RETINAS else ''
         # _plot_heatmap(data, np.median, 'median', f'response_efficiency_heatmap_median{tag}.png', suffix)
-        _plot_heatmap(data, np.mean, 'mean', f'response_efficiency_heatmap_mean{tag}.png', suffix)
+        # _plot_heatmap(data, np.mean, 'mean', f'response_efficiency_heatmap_mean{tag}.png', suffix)
 
     # normalise norm100 efficiencies to [0, global_max] before plotting
     all_norm100_effs = [e for rd in data_by_retina_norm100.values()
@@ -406,8 +413,8 @@ if __name__ == '__main__':
     for retina, data in sorted(data_by_retina_norm100.items()):
         suffix = retina if SEPARATE_RETINAS else ''
         tag    = f'_{retina.replace(" ", "_")}' if SEPARATE_RETINAS else ''
-        _plot_heatmap(data, np.mean, f'norm-sum-{PULSE_LIMIT}',
-                      f'response_efficiency_heatmap_norm{PULSE_LIMIT}{tag}.png', suffix)
+        # _plot_heatmap(data, np.mean, f'norm-sum-{PULSE_LIMIT}',
+        #               f'response_efficiency_heatmap_norm{PULSE_LIMIT}{tag}.png', suffix)
 
     for retina, data in sorted(data_by_retina_cv.items()):
         suffix = retina if SEPARATE_RETINAS else ''
@@ -415,6 +422,58 @@ if __name__ == '__main__':
         _plot_heatmap(data, np.mean, 'amplitude decay (%)',
                       f'response_efficiency_heatmap_cv{tag}.png', suffix,
                       vmax=100)
+
+    # ── amplitude decay line plot: x=freq, y=−decay_pct, colour=current ──────
+    all_currents_cv = sorted({cur
+                               for rd in data_by_retina_cv.values()
+                               for (cur, _) in rd})
+    _tab = plt.cm.tab10(np.linspace(0, 0.9, max(len(all_currents_cv), 1)))
+    cur_color_cv = {c: _tab[i] for i, c in enumerate(all_currents_cv)}
+
+    for retina, data in sorted(data_by_retina_cv.items()):
+        suffix = retina if SEPARATE_RETINAS else ''
+        tag    = f'_{retina.replace(" ", "_")}' if SEPARATE_RETINAS else ''
+
+        freqs_cv    = sorted({freq for (_, freq) in data})
+        currents_cv = sorted({cur  for (cur, _)  in data})
+
+        fig_cv, ax_cv = plt.subplots(figsize=(6, 4))
+
+        for cur in currents_cv:
+            xs, ys, errs = [], [], []
+            for freq in freqs_cv:
+                vals = [-v for v, _ in data.get((cur, freq), [])]
+                if not vals:
+                    continue
+                xs.append(freq)
+                ys.append(float(np.mean(vals)))
+                errs.append(float(np.std(vals)))
+            if not xs:
+                continue
+            ax_cv.errorbar(xs, ys, yerr=errs,
+                           color=cur_color_cv[cur], linewidth=2.5,
+                           marker='o', markersize=7, capsize=5, capthick=1.5,
+                           label=f'{cur:g} µA', zorder=3)
+
+        ax_cv.axhline(0, color='grey', linewidth=0.8, linestyle='--')
+        ax_cv.set_xticks(freqs_cv)
+        ax_cv.set_xticklabels([f'{f:g}' for f in freqs_cv], fontsize=9)
+        ax_cv.set_xlabel('Frequency (Hz)', fontsize=10)
+        ax_cv.set_ylabel('−Amplitude decay (%)', fontsize=10)
+        title = 'Amplitude stability (first 3 vs last 3 pulses)'
+        if suffix:
+            title += f'  [{suffix}]'
+        ax_cv.set_title(title, fontsize=10)
+        ax_cv.legend(fontsize=9, frameon=False)
+        ax_cv.spines['top'].set_visible(False)
+        ax_cv.spines['right'].set_visible(False)
+
+        plt.tight_layout()
+        out_cv = os.path.join(RESULTS_DIR, f'amplitude_decay_lineplot{tag}.png')
+        fig_cv.savefig(out_cv, dpi=150, bbox_inches='tight')
+        plt.show()
+        plt.close(fig_cv)
+        print(f'Saved → {out_cv}')
 
     # ── pulse # vs amplitude scatter ──────────────────────────────────────────
     if pulse_entries:
@@ -446,13 +505,18 @@ if __name__ == '__main__':
             n_pulses  = int(ch_sub['pulse_index'].max()) + 1
             per_pulse = (ch_sub.groupby('pulse_index')['amplitude_mV'].max()
                          .reindex(range(n_pulses), fill_value=0))
-            ax.scatter(per_pulse.index, per_pulse.values,
+            first_amp = per_pulse[per_pulse > 0].iloc[0] if (per_pulse > 0).any() else None
+            if first_amp is None or first_amp == 0:
+                continue
+            norm_vals = (per_pulse.values - first_amp) / first_amp
+            ax.scatter(per_pulse.index, norm_vals,
                        s=2, color='black', linewidths=0)
             ax.set_title(f'{retina}\n{short_ch}  {cur:g}µA {freq:g}Hz',
                          fontsize=4.5, pad=2)
             ax.set_xticks([0, PULSE_LIMIT // 2, PULSE_LIMIT])
             ax.set_xticklabels([0, PULSE_LIMIT // 2, PULSE_LIMIT], fontsize=4)
-            ax.set_ylim(0, 5.5)
+            ax.set_ylim(-1, 1)
+            ax.axhline(0, color='grey', linewidth=0.3, linestyle='--')
             ax.tick_params(axis='y', labelsize=4, length=2, pad=1)
             for spine in ax.spines.values():
                 spine.set_linewidth(0.4)
@@ -461,7 +525,7 @@ if __name__ == '__main__':
             axes_sc[idx // n_cols][idx % n_cols].set_visible(False)
 
         fig_sc.text(0.5, 0.01, 'pulse #', ha='center', fontsize=7)
-        fig_sc.text(0.01, 0.5, 'amplitude (mV)', va='center', rotation='vertical', fontsize=7)
+        fig_sc.text(0.01, 0.5, '(amp − first amp) / first amp', va='center', rotation='vertical', fontsize=7)
 
         plt.tight_layout(rect=[0.03, 0.03, 1, 1])
         plt.subplots_adjust(wspace=0.15, hspace=0.55)
@@ -634,14 +698,16 @@ if __name__ == '__main__':
                     continue
                 per_pulse = (detected.groupby('pulse_index')['amplitude_mV'].max()
                              .reindex(range(PULSE_LIMIT), fill_value=0))
-                ax.plot(per_pulse.index, per_pulse.values,
+                first_amp = per_pulse[per_pulse > 0].iloc[0] if (per_pulse > 0).any() else 0
+                if first_amp == 0:
+                    continue
+                ax.plot(per_pulse.index, per_pulse.values / first_amp,
                         linewidth=0.4, alpha=0.5, color='black')
             ax.set_title(f'{freq:g} Hz', fontsize=8)
             ax.set_xlabel('pulse #', fontsize=7)
             ax.set_xlim(0, PULSE_LIMIT)
-            ax.set_ylim(0, 8)
             if col == 0:
-                ax.set_ylabel('amplitude (mV)', fontsize=7)
+                ax.set_ylabel('amplitude / first amplitude', fontsize=7)
             ax.tick_params(labelsize=6)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
