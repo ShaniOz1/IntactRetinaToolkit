@@ -570,6 +570,7 @@ def plot_spikes_layout_mea(
     data_type: str = 'blanked',
     threshold: float | None = None,
     ylim: tuple[float, float] = (-1.0, 1.0),
+    blank_ms: float | None = None,
     save: bool = True,
     output_folder: str | None = None,
 ) -> None:
@@ -656,6 +657,9 @@ def plot_spikes_layout_mea(
 
         if threshold is not None:
             ax.axhline(-threshold, color='grey', linewidth=0.5, linestyle='--')
+
+        if blank_ms is not None and data_type == 'blanked':
+            ax.axvline(blank_ms, color='grey', linewidth=0.5, linestyle='--')
 
         # Channel label — top-centre
         short_label = ch_name.split()[-1].upper() if ' ' in ch_name else ch_name.lower()

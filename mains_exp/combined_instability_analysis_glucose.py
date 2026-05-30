@@ -1,0 +1,385 @@
+"""
+combined_instability_analysis_glucose.py
+=========================================
+Loads ex vivo glucose-experiment direct-response CSV data and produces the
+same instability figures as combined_instability_analysis.py, but with one
+subplot per experimental phase instead of ex vivo / intact.
+
+Phases come directly from the Phase* subfolder names under SOURCE_DIR:
+    Phase1 - Normal   (pre-glucose baseline)
+    Phase2 - Low      (low glucose)
+    Phase3 -Normal    (post-glucose recovery)
+
+Only the first N_PHASES folders (sorted) are used.  Each CSV in GLUCOSE_DIR
+is matched back to its source Phase folder via its embedded EDF filename.
+
+Source CSVs  : Results/ex_vivo_glucose/
+Channels used: K9 and D11  (2025.11.12 retina)
+
+Each record dict contains:
+    phase       : str   (folder name, e.g. 'Phase2 - Low')
+    current_uA  : float
+    freq_Hz     : float
+    channel     : str   (short name, upper-cased, e.g. 'K9')
+    pulses      : DataFrame[pulse_index, amplitude_mV]
+    filename    : str   (source CSV basename)
+"""
+
+import os
+import re
+import glob
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import gaussian_kde
+
+
+# ── analysis parameters ───────────────────────────────────────────────────────
+
+START_PULSE   = 2      # first pulse index to include (pulses 0 and 1 are skipped)
+PULSE_LIMIT   = 50     # number of pulses starting from START_PULSE
+                       #   → kept window: [START_PULSE, START_PULSE + PULSE_LIMIT)
+HIST_PULSES   = [10, 20, 30, 40, 50]   # pulse indices shown as histogram rows
+SMOOTH_WINDOW = 7      # rolling-average window for overview lines (1 = disabled)
+
+N_PHASES      = 3      # how many Phase* folders to use (sorted alphabetically)
+
+
+# ── paths ─────────────────────────────────────────────────────────────────────
+
+SOURCE_DIR  = r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1'
+GLUCOSE_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\ex_vivo_glucose'
+
+# Reference channels for the 2025.11.12 retina (glucose experiment)
+ALLOWED_CHANNELS: set[str] = {'K9', 'D11'}
+
+
+# ── build EDF → phase-folder lookup from SOURCE_DIR ───────────────────────────
+# Scan the first N_PHASES Phase* subfolders and map every EDF basename to its
+# folder name.  This is used to assign a phase to each CSV in GLUCOSE_DIR.
+
+phase_dirs = sorted(glob.glob(os.path.join(SOURCE_DIR, 'Phase*')))[:N_PHASES]
+
+if not phase_dirs:
+    print(f'No Phase* folders found under {SOURCE_DIR}')
+    raise SystemExit
+
+# Canonical phase order = alphabetical sort of the first N_PHASES folders
+PHASE_ORDER: list[str] = [os.path.basename(d) for d in phase_dirs]
+
+# {edf_basename (lower) → phase_folder_name}
+_edf_to_phase: dict[str, str] = {}
+for phase_dir in phase_dirs:
+    phase_name = os.path.basename(phase_dir)
+    for edf_path in glob.glob(os.path.join(phase_dir, '*.edf')):
+        _edf_to_phase[os.path.basename(edf_path).lower()] = phase_name
+
+print(f'Phase folders used: {PHASE_ORDER}')
+print(f'EDF files indexed : {len(_edf_to_phase)}\n')
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def parse_current_freq(filename: str):
+    """Return (current_uA, freq_Hz) parsed from filename, or (None, None)."""
+    cur  = re.search(r'(\d+(?:\.\d+)?)\s*uA', filename, re.IGNORECASE)
+    freq = re.search(r'(\d+(?:\.\d+)?)\s*Hz', filename, re.IGNORECASE)
+    if not cur or not freq:
+        return None, None
+    current = float(cur.group(1))
+    # Fix timestamp bleed into current value (e.g. "197uA" -> 7 uA)
+    if current == int(current) and int(current) % 10 == 7 and current != 7:
+        current = 7.0
+    return current, float(freq.group(1))
+
+
+def csv_to_phase(csv_fname: str) -> Optional[str]:
+    """
+    Recover the source EDF filename from a CSV basename, then look up its
+    Phase folder.  CSV format: '{low|normal}_{edf_fname}_direct_response.csv'
+    Returns None if the EDF cannot be matched to any indexed Phase folder.
+    """
+    # Strip low_/normal_ prefix and _direct_response.csv suffix
+    stem = re.sub(r'^(?:low|normal)_', '', csv_fname, flags=re.IGNORECASE)
+    stem = re.sub(r'_direct_response\.csv$', '', stem, flags=re.IGNORECASE)
+    return _edf_to_phase.get(stem.lower())
+
+
+def load_glucose_pulses(csv_path: str) -> list[dict]:
+    """
+    Load pulse data for ALLOWED_CHANNELS from one glucose CSV.
+    Returns list of {'channel': short_name, 'pulses': DataFrame[pulse_index, amplitude_mV]}.
+    """
+    df = pd.read_csv(csv_path)
+    if df.empty or 'amplitude_mV' not in df.columns or 'pulse_index' not in df.columns:
+        return []
+    df = df.dropna(subset=['pulse_index']).copy()
+    df['amplitude_mV'] = df['amplitude_mV'].abs()
+
+    records = []
+    for ch, ch_df in df.groupby('channel'):
+        short_ch = str(ch).split()[-1].upper()
+        if short_ch not in ALLOWED_CHANNELS:
+            continue
+        pulses = (ch_df[
+                      (ch_df['pulse_index'] >= START_PULSE) &
+                      (ch_df['pulse_index'] <  START_PULSE + PULSE_LIMIT)
+                  ][['pulse_index', 'amplitude_mV']]
+                  .copy()
+                  .reset_index(drop=True))
+        records.append({'channel': short_ch, 'pulses': pulses})
+    return records
+
+
+# ── load all glucose CSVs ─────────────────────────────────────────────────────
+
+glucose_records: list[dict] = []
+
+for path in sorted(glob.glob(os.path.join(GLUCOSE_DIR, '*_direct_response.csv'))):
+    fname = os.path.basename(path)
+    phase = csv_to_phase(fname)
+    if phase is None:
+        print(f'  [skip] could not match to a Phase folder: {fname}')
+        continue
+
+    current, freq = parse_current_freq(fname)
+    if current is None:
+        print(f'  [skip] could not parse current/freq: {fname}')
+        continue
+
+    for ch_rec in load_glucose_pulses(path):
+        glucose_records.append({
+            'phase':      phase,
+            'current_uA': current,
+            'freq_Hz':    freq,
+            'channel':    ch_rec['channel'],
+            'pulses':     ch_rec['pulses'],
+            'filename':   fname,
+        })
+
+
+# ── summary ───────────────────────────────────────────────────────────────────
+
+def _print_summary(records: list[dict]) -> None:
+    if not records:
+        print('\nGLUCOSE: no records loaded.')
+        return
+
+    df = pd.DataFrame([
+        {'phase': r['phase'], 'current_uA': r['current_uA'],
+         'freq_Hz': r['freq_Hz'], 'channel': r['channel']}
+        for r in records
+    ])
+
+    counts = (df.groupby(['phase', 'current_uA', 'freq_Hz'])['channel']
+                .nunique()
+                .reset_index(name='n_channels'))
+
+    col_keys   = sorted(counts[['current_uA', 'freq_Hz']]
+                        .drop_duplicates()
+                        .itertuples(index=False, name=None))
+    col_labels = {(c, f): f'{c:g}uA / {f:g}Hz' for c, f in col_keys}
+
+    phases = sorted(counts['phase'].unique(),
+                    key=lambda p: PHASE_ORDER.index(p) if p in PHASE_ORDER else 999)
+
+    pivot: dict[str, dict[str, str]] = {}
+    for _, row in counts.iterrows():
+        key = (row['current_uA'], row['freq_Hz'])
+        pivot.setdefault(row['phase'], {})[col_labels[key]] = str(int(row['n_channels']))
+
+    phase_w = max(len('Phase'), max(len(p) for p in phases))
+    col_ws  = {lbl: max(len(lbl), 1) for lbl in col_labels.values()}
+
+    header = f'  {"Phase":<{phase_w}}' + ''.join(f'  {lbl:>{col_ws[lbl]}}' for lbl in col_labels.values())
+    sep    = '  ' + '-' * (len(header) - 2)
+
+    print(f'\nGLUCOSE  (total records: {len(records)})')
+    print(sep)
+    print(header)
+    print(sep)
+    for phase in phases:
+        row_str = f'  {phase:<{phase_w}}'
+        for lbl in col_labels.values():
+            val = pivot.get(phase, {}).get(lbl, '-')
+            row_str += f'  {val:>{col_ws[lbl]}}'
+        print(row_str)
+    print(sep)
+
+
+_print_summary(glucose_records)
+print()
+
+
+# ── group records by phase (only phases with data, in canonical order) ─────────
+
+records_by_phase: dict[str, list[dict]] = {}
+for rec in glucose_records:
+    records_by_phase.setdefault(rec['phase'], []).append(rec)
+
+present_phases = [p for p in PHASE_ORDER if p in records_by_phase]
+n_phases = len(present_phases)
+
+if n_phases == 0:
+    print('No data loaded -- check GLUCOSE_DIR, SOURCE_DIR, and ALLOWED_CHANNELS.')
+    raise SystemExit
+
+
+# ── normalisation ─────────────────────────────────────────────────────────────
+
+def _normalise(rec: dict) -> Optional[pd.DataFrame]:
+    """
+    Return a DataFrame with columns [pulse_index, norm_amp] for detected pulses,
+    normalised as (amp - y0) / y0  where y0 = amplitude at pulse START_PULSE.
+    Returns None if START_PULSE has no detected response.
+    """
+    per_pulse = (
+        rec['pulses']
+        .groupby('pulse_index')['amplitude_mV']
+        .max()
+        .reindex(range(START_PULSE, START_PULSE + PULSE_LIMIT), fill_value=0)
+        .reset_index()
+    )
+    per_pulse.columns = ['pulse_index', 'amplitude_mV']
+
+    y0 = float(per_pulse.loc[per_pulse['pulse_index'] == START_PULSE, 'amplitude_mV'].iloc[0])
+    if y0 == 0:
+        return None
+
+    detected = per_pulse[per_pulse['amplitude_mV'] > 0].copy()
+    if detected.empty:
+        return None
+    detected['norm_amp'] = (detected['amplitude_mV'] - y0) / y0
+    return detected[['pulse_index', 'norm_amp']]
+
+
+# ── overview figure: row 1 = normalised, row 2 = raw amplitude ───────────────
+
+_grid_ys = [0.75, 0.5, 0.25, 0, -0.25, -0.5, -0.75]
+
+fig_ov, axes_ov = plt.subplots(2, n_phases,
+                               figsize=(4 * n_phases, 6),
+                               sharex=True)
+
+# axes_ov is always 2-D [row][col]
+if n_phases == 1:
+    axes_ov = [[axes_ov[0]], [axes_ov[1]]]
+
+# ── row 0: normalised traces ──────────────────────────────────────────────────
+for col_i, phase in enumerate(present_phases):
+    ax = axes_ov[0][col_i]
+    for rec in records_by_phase[phase]:
+        norm_df = _normalise(rec)
+        if norm_df is None:
+            continue
+        y_smooth = (norm_df['norm_amp']
+                    .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+                    .mean())
+        ax.plot(norm_df['pulse_index'], y_smooth,
+                color='black', linewidth=0.4, alpha=0.4)
+
+    for _y in _grid_ys:
+        ax.axhline(_y, color='grey', linewidth=0.35, alpha=0.3)
+
+    ax.set_ylim(-1, 1)
+    ax.set_title(phase, fontsize=10, loc='left', pad=3)
+    ax.tick_params(labelsize=6)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+axes_ov[0][0].set_ylabel('(y − y₀) / y₀', fontsize=7)
+
+# ── row 1: raw amplitude traces ───────────────────────────────────────────────
+for col_i, phase in enumerate(present_phases):
+    ax = axes_ov[1][col_i]
+    for rec in records_by_phase[phase]:
+        per_pulse = (rec['pulses']
+                     .groupby('pulse_index')['amplitude_mV']
+                     .max()
+                     .reset_index())
+        y_smooth = (per_pulse['amplitude_mV']
+                    .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+                    .mean())
+        ax.plot(per_pulse['pulse_index'], y_smooth,
+                color='black', linewidth=0.4, alpha=0.4)
+
+    ax.set_xlim(START_PULSE, START_PULSE + PULSE_LIMIT)
+    ax.set_ylim(0, 7)
+    ax.set_xlabel('# pulse', fontsize=7)
+    ax.tick_params(labelsize=6)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+axes_ov[1][0].set_ylabel('amplitude (mV)', fontsize=7)
+
+plt.tight_layout()
+plt.show()
+plt.close(fig_ov)
+
+
+# ── histograms: normalised amplitude at each HIST_PULSE, one column per phase ─
+
+def _value_at_pulse(rec: dict, pulse_idx: int) -> Optional[float]:
+    """Return the normalised amplitude at a specific pulse index, or None."""
+    norm_df = _normalise(rec)
+    if norm_df is None:
+        return None
+    row = norm_df[norm_df['pulse_index'] == pulse_idx]
+    if row.empty:
+        return None
+    return float(row['norm_amp'].iloc[0])
+
+
+n_hist_rows = len(HIST_PULSES)
+_hist_bins  = np.linspace(-1, 1, 11)   # 10 bins of width 0.2, shared across all subplots
+
+fig_hist, axes_hist = plt.subplots(n_hist_rows, n_phases,
+                                   figsize=(3 * n_phases, 1.6 * n_hist_rows),
+                                   sharex=True, sharey=True)
+
+# Ensure axes_hist is always 2-D: [row][col]
+if n_hist_rows == 1 and n_phases == 1:
+    axes_hist = [[axes_hist]]
+elif n_hist_rows == 1:
+    axes_hist = [list(axes_hist)]
+elif n_phases == 1:
+    axes_hist = [[axes_hist[r]] for r in range(n_hist_rows)]
+
+for row_i, pulse_idx in enumerate(HIST_PULSES):
+    for col_i, phase in enumerate(present_phases):
+        ax = axes_hist[row_i][col_i]
+        vals = [v for rec in records_by_phase[phase]
+                if (v := _value_at_pulse(rec, pulse_idx)) is not None
+                and np.isfinite(v)]
+
+        if vals:
+            weights = [100.0 / len(vals)] * len(vals)
+            bar_heights, _ = np.histogram(vals, bins=_hist_bins, weights=weights)
+            ax.hist(vals, bins=_hist_bins, weights=weights,
+                    color='#c8c8c8', edgecolor='black', linewidth=0.4, alpha=0.9)
+            ax.axvline(0, color='black', linewidth=0.6, linestyle='--', alpha=0.4)
+            if len(vals) > 1:
+                x_kde    = np.linspace(-1, 1, 300)
+                kde_vals = gaussian_kde(vals)(x_kde)
+                # Scale KDE peak to match tallest bar — keeps shape without exceeding 100%
+                max_bar  = bar_heights.max()
+                if kde_vals.max() > 0 and max_bar > 0:
+                    kde_vals = kde_vals / kde_vals.max() * max_bar
+                ax.plot(x_kde, kde_vals, color='black', linewidth=1.5)
+
+        ax.set_xlim(-1, 1)
+        ax.set_title(f'{phase}  pulse {pulse_idx}', fontsize=7, loc='left', pad=2)
+        ax.tick_params(labelsize=5, length=2, pad=1)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes_hist[row_i][0].set_ylabel('%', fontsize=6)
+
+for col_i in range(n_phases):
+    axes_hist[-1][col_i].set_xlabel('(y - y0) / y0', fontsize=6)
+
+plt.tight_layout(h_pad=0.5, w_pad=0.5)
+plt.show()
+plt.close(fig_hist)

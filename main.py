@@ -97,11 +97,11 @@ if __name__ == '__main__':
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     # ── MEA EDF ──────────────────────────────────────────────
-    # print()
-    # print('=' * 60)
-    # print('MEA EDF')
-    # print('=' * 60)
-    # edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
+    print()
+    print('=' * 60)
+    print('MEA EDF')
+    print('=' * 60)
+    edf_rec = load_edf(EDF_FILE, stim_electrode=EDF_STIM_ELECTRODE)
     # edf_rec.filter()
     # edf_rec.blank(duration_ms=BLANK_MS, source='filtered_data')
     #
@@ -114,7 +114,7 @@ if __name__ == '__main__':
     # #                     threshold=DIRECT_THRESHOLD_MV,
     # #                     output_folder=RESULTS_DIR)
     #
-    # plot_direct_response_summary(rec=edf_rec, output_folder=RESULTS_DIR)
+    plot_direct_response_summary(rec=edf_rec, output_folder=RESULTS_DIR)
 
     # edf_rec.detect_indirect_response(blanking_ms=INDIRECT_BLANK_MS, threshold_std=INDIRECT_THRESH_STD)
     # plot_indirect_response_raster(rec=edf_rec, save=True, output_folder=RESULTS_DIR)

@@ -557,6 +557,7 @@ def _run_threshold_detection(
                         else _compute_threshold(
                             raw_data[ch_idx, :], rec.stim_indices, rec.sample_rate
                         ))
+        # ch_threshold = threshold
 
         for pulse_idx, stim_idx in enumerate(rec.stim_indices):
             start = int(stim_idx)

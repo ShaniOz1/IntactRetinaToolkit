@@ -49,9 +49,9 @@ HIST_PULSES          = [10, 20, 30, 40, 50]   # pulse indices shown as histogram
 EX_VIVO_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\ex_vivo_all'
 
 INTACT_DIRS = {
-     1: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\1hz',
-    10: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\10hz',
-    20: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\20hz',
+     1: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_data\1hz',
+    10: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_data\10hz',
+    20: r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_data\20hz',
 }
 
 
@@ -307,6 +307,11 @@ print()
 
 
 
+def _has_full_window(rec: dict) -> bool:
+    """Return True only if the record contains pulses reaching the end of the window."""
+    return int(rec['pulses']['pulse_index'].max()) >= START_PULSE + PULSE_LIMIT - 1
+
+
 def _normalise(rec: dict) -> Optional[pd.DataFrame]:
     """
     Return a DataFrame with columns [pulse_index, norm_amp] for detected pulses,
@@ -334,41 +339,83 @@ def _normalise(rec: dict) -> Optional[pd.DataFrame]:
     return detected[['pulse_index', 'norm_amp']]
 
 
-# ── overview figure: all normalised traces ────────────────────────────────────
+# ── overview figure: row 0 = all black, row 1 = coloured by (current, freq) ───
 
 SMOOTH_WINDOW = 7   # rolling-average window for overview lines (set to 1 to disable)
 
 _pulse_idx = list(range(START_PULSE, START_PULSE + PULSE_LIMIT))
 _grid_ys   = [0.75, 0.5, 0.25, 0, -0.25, -0.5, -0.75]
 
-fig_ov, (ax_ev, ax_in) = plt.subplots(1, 2, figsize=(8, 3.5), sharey=True)
+# Build colour map: one colour per unique (current_uA, freq_Hz) combination
+_all_cf = sorted({(r['current_uA'], r['freq_Hz'])
+                  for r in ex_vivo_records + intact_records})
+_cmap   = plt.get_cmap('tab10')
+_cf_color = {cf: _cmap(i % 10) for i, cf in enumerate(_all_cf)}
 
-for ax, ov_records, title in [
-    (ax_ev, ex_vivo_records, 'Ex vivo'),
-    (ax_in, intact_records,  'Intact'),
-]:
+fig_ov, axes_ov = plt.subplots(2, 2, figsize=(8, 6), sharey=True, sharex=True)
+
+for col_i, (ov_records, title) in enumerate([
+    (ex_vivo_records, 'Ex vivo'),
+    (intact_records,  'Intact'),
+]):
+    # ── row 0: all traces in black ────────────────────────────────────────────
+    ax0 = axes_ov[0][col_i]
     for rec in ov_records:
+        if not _has_full_window(rec):
+            continue
         norm_df = _normalise(rec)
         if norm_df is None:
             continue
         y_smooth = (norm_df['norm_amp']
                     .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
                     .mean())
-        ax.plot(norm_df['pulse_index'], y_smooth,
-                color='black', linewidth=0.4, alpha=0.4)
+        ax0.plot(norm_df['pulse_index'], y_smooth,
+                 color='black', linewidth=0.4, alpha=0.4)
 
     for _y in _grid_ys:
-        ax.axhline(_y, color='grey', linewidth=0.35, alpha=0.3)
+        ax0.axhline(_y, color='grey', linewidth=0.35, alpha=0.3)
 
-    ax.set_xlim(START_PULSE, START_PULSE + PULSE_LIMIT)
-    ax.set_ylim(-1, 1)
-    ax.set_title(title, fontsize=10, loc='left', pad=3)
-    ax.set_xlabel('# pulse', fontsize=7)
-    ax.tick_params(labelsize=6)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    ax0.set_ylim(-1, 1)
+    ax0.set_title(title, fontsize=10, loc='left', pad=3)
+    ax0.tick_params(labelsize=6)
+    ax0.spines['top'].set_visible(False)
+    ax0.spines['right'].set_visible(False)
 
-ax_ev.set_ylabel('(y − y₀) / y₀', fontsize=7)
+    # ── row 1: traces coloured by (current_uA, freq_Hz) ──────────────────────
+    ax1 = axes_ov[1][col_i]
+    _plotted_cf = set()
+    for rec in ov_records:
+        if not _has_full_window(rec):
+            continue
+        norm_df = _normalise(rec)
+        if norm_df is None:
+            continue
+        cf    = (rec['current_uA'], rec['freq_Hz'])
+        color = _cf_color[cf]
+        label = f'{cf[0]:g}µA / {cf[1]:g}Hz' if cf not in _plotted_cf else None
+        _plotted_cf.add(cf)
+        y_smooth = (norm_df['norm_amp']
+                    .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+                    .mean())
+        ax1.plot(norm_df['pulse_index'], y_smooth,
+                 color=color, linewidth=0.4, alpha=0.6, label=label)
+
+    for _y in _grid_ys:
+        ax1.axhline(_y, color='grey', linewidth=0.35, alpha=0.3)
+
+    ax1.set_xlim(START_PULSE, START_PULSE + PULSE_LIMIT)
+    ax1.set_ylim(-1, 1)
+    ax1.set_xlabel('# pulse', fontsize=7)
+    ax1.tick_params(labelsize=6)
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+
+    if _plotted_cf:
+        ax1.legend(fontsize=5, loc='upper right', framealpha=0.6,
+                   handlelength=1.2, labelspacing=0.3)
+
+axes_ov[0][0].set_ylabel('(y − y₀) / y₀', fontsize=7)
+axes_ov[1][0].set_ylabel('(y − y₀) / y₀', fontsize=7)
 
 plt.tight_layout()
 plt.show()
@@ -378,7 +425,10 @@ plt.close(fig_ov)
 # ── histograms: normalised amplitude at each pulse in HIST_PULSES ─────────────
 
 def _value_at_pulse(rec: dict, pulse_idx: int) -> Optional[float]:
-    """Return the normalised amplitude at a specific pulse index, or None."""
+    """Return the normalised amplitude at a specific pulse index, or None.
+    Returns None if the record does not cover the full PULSE_LIMIT window."""
+    if not _has_full_window(rec):
+        return None
     norm_df = _normalise(rec)
     if norm_df is None:
         return None
@@ -406,17 +456,19 @@ for row_i, pulse_idx in enumerate(HIST_PULSES):
                 and np.isfinite(v)]
 
         if vals:
-            bin_w   = _hist_bins[1] - _hist_bins[0]   # 0.2
             weights = [100.0 / len(vals)] * len(vals)
+            bar_heights, _ = np.histogram(vals, bins=_hist_bins, weights=weights)
             ax.hist(vals, bins=_hist_bins, weights=weights,
                     color='#c8c8c8', edgecolor='black', linewidth=0.4, alpha=0.9)
             ax.axvline(0, color='black', linewidth=0.6, linestyle='--', alpha=0.4)
-            # KDE scaled to match the % y-axis: density × bin_width × 100
+            # KDE peak scaled to match tallest bar — keeps shape without exceeding 100%
             if len(vals) > 1:
-                x_kde = np.linspace(-1, 1, 300)
-                kde   = gaussian_kde(vals)
-                ax.plot(x_kde, kde(x_kde) * bin_w * 100,
-                        color='black', linewidth=1.5)
+                x_kde    = np.linspace(-1, 1, 300)
+                kde_vals = gaussian_kde(vals)(x_kde)
+                max_bar  = bar_heights.max()
+                if kde_vals.max() > 0 and max_bar > 0:
+                    kde_vals = kde_vals / kde_vals.max() * max_bar
+                ax.plot(x_kde, kde_vals, color='black', linewidth=1.5)
 
         ax.set_xlim(-1, 1)
         ax.set_title(f'{title}  ·  pulse {pulse_idx}', fontsize=7, loc='left', pad=2)
@@ -432,3 +484,141 @@ for col_i in range(2):
 plt.tight_layout(h_pad=0.5, w_pad=0.5)
 plt.show()
 plt.close(fig_hist)
+
+
+# ── histograms: absolute amplitude (mV) at each pulse in HIST_PULSES ──────────
+
+def _abs_value_at_pulse(rec: dict, pulse_idx: int) -> Optional[float]:
+    """Return the raw amplitude (mV) at a specific pulse index, or None.
+    Returns None if the record does not cover the full PULSE_LIMIT window."""
+    if not _has_full_window(rec):
+        return None
+    per_pulse = (
+        rec['pulses']
+        .groupby('pulse_index')['amplitude_mV']
+        .max()
+        .reset_index()
+    )
+    row = per_pulse[per_pulse['pulse_index'] == pulse_idx]
+    if row.empty:
+        return None
+    val = float(row['amplitude_mV'].iloc[0])
+    return val if np.isfinite(val) else None
+
+
+fig_hist_abs, axes_hist_abs = plt.subplots(1, 2, figsize=(6, 2.2), sharey=True)
+
+for col_i, (h_records, title) in enumerate([
+    (ex_vivo_records, 'Ex vivo'),
+    (intact_records,  'Intact'),
+]):
+    ax   = axes_hist_abs[col_i]
+    vals = [v for rec in h_records
+            if (v := _abs_value_at_pulse(rec, START_PULSE)) is not None]
+
+    if vals:
+        weights        = [100.0 / len(vals)] * len(vals)
+        x_max          = max(vals) * 1.05
+        bins_abs       = np.linspace(0, x_max, 11)
+        bar_heights, _ = np.histogram(vals, bins=bins_abs, weights=weights)
+        ax.hist(vals, bins=bins_abs, weights=weights,
+                color='#c8c8c8', edgecolor='black', linewidth=0.4, alpha=0.9)
+        if len(vals) > 1:
+            x_kde    = np.linspace(0, x_max, 300)
+            kde_vals = gaussian_kde(vals)(x_kde)
+            max_bar  = bar_heights.max()
+            if kde_vals.max() > 0 and max_bar > 0:
+                kde_vals = kde_vals / kde_vals.max() * max_bar
+            ax.plot(x_kde, kde_vals, color='black', linewidth=1.5)
+
+    if col_i == 1:   # intact: fixed x range
+        ax.set_xlim(0, 1)
+    ax.set_title(f'{title}  ·  first amplitude', fontsize=7, loc='left', pad=2)
+    ax.set_xlabel('amplitude (mV)', fontsize=6)
+    ax.tick_params(labelsize=5, length=2, pad=1)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+axes_hist_abs[0].set_ylabel('%', fontsize=6)
+
+plt.tight_layout(h_pad=0.5, w_pad=0.5)
+plt.show()
+plt.close(fig_hist_abs)
+
+
+# ── scatter: first amplitude (y0) vs normalised amplitude at pulse 50 ────────
+# Each point = one record (channel × file).
+# Y axis : raw amplitude at START_PULSE (mV)   — "how strong was the first response"
+# X axis : normalised amplitude at pulse 50    — "how much did it change by the end"
+# Colour : (current_uA, freq_Hz) — same palette as the overview figure
+
+SCATTER_PULSE = START_PULSE + PULSE_LIMIT - 1   # = 51  (last pulse in window)
+
+
+def _y0_amplitude(rec: dict) -> Optional[float]:
+    """Return the raw amplitude (mV) at START_PULSE for this record, or None."""
+    if not _has_full_window(rec):
+        return None
+    per_pulse = (
+        rec['pulses']
+        .groupby('pulse_index')['amplitude_mV']
+        .max()
+        .reset_index()
+    )
+    row = per_pulse[per_pulse['pulse_index'] == START_PULSE]
+    if row.empty:
+        return None
+    val = float(row['amplitude_mV'].iloc[0])
+    return val if val > 0 else None
+
+
+fig_sc, axes_sc = plt.subplots(1, 2, figsize=(9, 4), sharey=False)
+
+_plotted_cf_sc = set()   # track legend entries across both subplots
+
+for col_i, (sc_records, title) in enumerate([
+    (ex_vivo_records, 'Ex vivo'),
+    (intact_records,  'Intact'),
+]):
+    ax = axes_sc[col_i]
+
+    for rec in sc_records:
+        x = _value_at_pulse(rec, SCATTER_PULSE)
+        y = _y0_amplitude(rec)
+        if x is None or y is None or not np.isfinite(x) or not np.isfinite(y):
+            continue
+        cf    = (rec['current_uA'], rec['freq_Hz'])
+        color = _cf_color[cf]
+        label = f'{cf[0]:g}µA / {cf[1]:g}Hz' if cf not in _plotted_cf_sc else None
+        _plotted_cf_sc.add(cf)
+        ax.scatter(x, y, color=color, s=18, alpha=0.7, linewidths=0,
+                   label=label, zorder=3)
+
+    ax.axvline(0, color='grey', linewidth=0.6, linestyle='--', alpha=0.5)
+    ax.set_xlabel('last pulse normalised amplitude  (y − y₀) / y₀', fontsize=8)
+    ax.set_ylabel('first absolute amplitude (mV)', fontsize=8)
+    ax.set_title(title, fontsize=10, loc='left', pad=3)
+    ax.tick_params(labelsize=7)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+# Collect all labelled handles from both axes and place a single legend
+# to the right of the figure, outside the subplots.
+_sc_handles, _sc_labels = [], []
+for _ax in axes_sc:
+    for _h, _l in zip(*_ax.get_legend_handles_labels()):
+        if _l not in _sc_labels:
+            _sc_handles.append(_h)
+            _sc_labels.append(_l)
+
+if _sc_handles:
+    fig_sc.legend(_sc_handles, _sc_labels,
+                  fontsize=6, loc='center right',
+                  bbox_to_anchor=(1.0, 0.5),
+                  handlelength=1.2, labelspacing=0.4, markerscale=1.5,
+                  framealpha=0.6)
+
+plt.tight_layout()
+fig_sc.subplots_adjust(right=0.82)   # make room for the legend
+plt.show()
+plt.close(fig_sc)

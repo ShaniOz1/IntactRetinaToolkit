@@ -16,7 +16,7 @@ from dataviz.viz import *
 from datahelper.statistics import compare_direct_responses
 from dataobj.analysis.direct import _compute_threshold
 
-RESULTS_DIR = r'/Results/ex_vivo_all'
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Results', 'ex_vivo_all')
 
 # ============================================================
 #  PARAMS
@@ -24,11 +24,11 @@ RESULTS_DIR = r'/Results/ex_vivo_all'
 
 # --- Direct response ---
 DIRECT_WIN_MS       = 10.0
-BLANK_MS            = 1.0
-DIRECT_THRESHOLD_MV = 0.2  # set to None to compute threshold from data
-INTERACTIVE         = True  # set to True to review/adjust threshold per file before saving
-
-# ============================================================
+BLANK_MS            = 1.5
+DIRECT_THRESHOLD_MV = 0.1  # set to None to compute threshold from data
+INTERACTIVE         = False  # set to True to review/adjust threshold per file before saving
+selected_channels = ['E_B-00071 C11', 'E_B-00071 D10', 'E_B-00071 D11', 'E_B-00071 D12', 'E_B-00071 F10', 'E_B-00071 J10', 'E_B-00071 J9', 'E_B-00071 K10', 'E_B-00071 K9', 'E_B-00071 L9']
+# =============================== =============================
 #  FILES TO RUN  (path, stim_electrode)
 # ============================================================
 
@@ -66,15 +66,139 @@ FILES = [
     # (r'C:\Shani\MEA mini1200\2025.11.02 e14_Shani\Retina3\phase1-normal\2025-11-02T16-07-34J9_20uA_300us_60us_20Hz_100pulses.edf',   'J9'),
     # (r'C:\Shani\MEA mini1200\2025.11.02 e14_Shani\Retina3\phase1-normal\2025-11-02T16-08-27J9_20uA_300us_60us_50Hz_100pulses.edf',   'J9'),
     # (r'C:\Shani\MEA mini1200\2025.11.02 e14_Shani\Retina3\phase1-normal\2025-11-02T16-13-18J9_20uA_300us_60us_100Hz_1000pulses.edf', 'J9'),
-    #
+
     # # ── Group 12 · 2025.11.12 Retina1 Phase1-Normal · G10 ──────────────────
-    # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-19-197uA_300us_60us_1Hz_100pulse_B-00071.edf',  'G10'),
+    (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-19-197uA_300us_60us_1Hz_100pulse_B-00071.edf',  'G10'),
     (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-22-027uA_300us_60us_10Hz_100pulse_B-00071.edf', 'G10'),
     # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-22-347uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
     # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-23-087uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
-    # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-25-147uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
-    # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-26-217uA_300us_60us_50Hz_100pulse_B-00071.edf', 'G10'),
+    (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-25-147uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
+    (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-26-217uA_300us_60us_50Hz_100pulse_B-00071.edf', 'G10'),
+
 ]
+
+# ============================================================
+#  CHANNEL SELECTION  (interactive helper)
+# ============================================================
+
+def _select_channels_interactive(rec, win_size_ms, blank_ms, threshold, data_type='blanked'):
+    """
+    Show the MEA grid and let the user click subplots to select channels.
+    A clicked subplot turns light-pink (selected); clicking again deselects it.
+    Close the window to confirm the selection.
+
+    Returns a list of selected channel names, or all channel names when nothing
+    is selected.
+    """
+    _attr_map = {'filtered': 'filtered_data', 'blanked': 'blanked_data', 'raw': 'recording_data'}
+    data = getattr(rec, _attr_map[data_type])
+
+    sample_rate  = rec.sample_rate
+    stim_indices = rec.stim_indices
+    locations    = rec.channel_locations
+    win_samples  = int(win_size_ms / 1000 * sample_rate)
+    xlim = (0, win_size_ms)
+    ylim = (-1.0, 1.0)
+
+    pos_to_ch: dict = {}
+    for ch_idx, ch_name in enumerate(rec.channel_names):
+        loc = locations[ch_idx] if ch_idx < len(locations) else None
+        if loc is None:
+            continue
+        row, col = int(loc[0]), int(loc[1])
+        if 0 <= row < 12 and 0 <= col < 12:
+            pos_to_ch[(row, col)] = (ch_idx, ch_name)
+
+    stim_pos = None
+    if rec.stim_channel_name:
+        for ch_idx, ch_name in enumerate(rec.channel_names):
+            if rec.stim_channel_name in ch_name:
+                loc = locations[ch_idx] if ch_idx < len(locations) else None
+                if loc is not None:
+                    stim_pos = (int(loc[0]), int(loc[1]))
+                break
+
+    selected: set = set()
+
+    fig, axes = plt.subplots(12, 12, figsize=(15, 10))
+    plt.subplots_adjust(wspace=0.05, hspace=0.05)
+
+    used_positions: set = set()
+    ax_to_ch: dict = {}
+
+    for (row, col), (ch_idx, ch_name) in pos_to_ch.items():
+        used_positions.add((row, col))
+        ax = axes[row, col]
+        ax_to_ch[ax] = ch_name
+        ch_data = data[ch_idx, :]
+
+        for stim_idx in stim_indices:
+            start  = int(stim_idx)
+            end    = int(min(stim_idx + win_samples, len(ch_data)))
+            window = ch_data[start:end]
+            if len(window) == 0:
+                continue
+            times = np.arange(len(window)) / sample_rate * 1000
+            ax.plot(times, window, color='black', linewidth=0.2)
+
+        if threshold is not None:
+            ax.axhline(-threshold, color='grey', linewidth=0.5, linestyle='--')
+        if blank_ms is not None:
+            ax.axvline(blank_ms, color='grey', linewidth=0.5, linestyle='--')
+
+        short_label = ch_name.split()[-1].upper() if ' ' in ch_name else ch_name.lower()
+        ax.text(0.5, 0.95, short_label, transform=ax.transAxes,
+                fontsize=6, va='top', ha='center', color='dimgrey')
+
+        if stim_pos is not None and (row, col) == stim_pos:
+            cx = (xlim[0] + xlim[1]) / 2
+            cy = (ylim[0] + ylim[1]) / 2
+            ax.plot(cx, cy, 'o', color='red', markersize=4, zorder=5)
+
+        for side, spine in ax.spines.items():
+            spine.set_visible(side in ('bottom', 'left'))
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    for r in range(12):
+        for c in range(12):
+            if (r, c) not in used_positions:
+                axes[r, c].set_visible(False)
+
+    def _on_click(event):
+        if event.inaxes is None:
+            return
+        ch_name = ax_to_ch.get(event.inaxes)
+        if ch_name is None:
+            return
+        if ch_name in selected:
+            selected.discard(ch_name)
+            event.inaxes.set_facecolor('white')
+        else:
+            selected.add(ch_name)
+            event.inaxes.set_facecolor('lightpink')
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect('button_press_event', _on_click)
+
+    plt.suptitle(
+        f'{rec.file_name}  —  Click channels to include in analysis. Close window when done.',
+        fontsize=9,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.show(block=False)
+    print('    Channel selection open — click subplots to toggle (pink = selected). Close window to confirm.')
+    while plt.fignum_exists(fig.number):
+        plt.pause(0.05)
+
+    if not selected:
+        print('    No channels selected — using all channels.')
+        return list(rec.channel_names)
+    print(f'    Selected {len(selected)} channel(s): {sorted(selected)}')
+    return list(selected)
+
 
 # ============================================================
 #  MAIN
@@ -106,11 +230,21 @@ if __name__ == '__main__':
                     threshold = float(np.median(per_ch))
                     print(f'    Auto threshold (median across channels): {threshold:.4f} mV')
 
+                # Step 1 — channel selection (once per group, first file only)
+                if selected_channels is None:
+                    selected_channels = _select_channels_interactive(
+                        edf_rec, DIRECT_WIN_MS, BLANK_MS, threshold
+                    )
+                else:
+                    print(f'    Using previously selected channels: {sorted(selected_channels)}')
+
+                # Step 2 — threshold review (every file)
                 while True:
                     plot_spikes_layout_mea(rec=edf_rec,
                                            win_size_ms=DIRECT_WIN_MS,
-                                           data_type='raw',
+                                           data_type='blanked',
                                            threshold=threshold,
+                                           blank_ms=BLANK_MS,
                                            output_folder=None)
 
                     thr_str = f'{threshold} mV'
@@ -126,6 +260,14 @@ if __name__ == '__main__':
                         print('    Invalid — enter a number or press Enter to approve.')
 
             edf_rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS, threshold=threshold)
+
+            if selected_channels is not None:
+                dr = edf_rec.direct_response
+                if dr is not None and not dr.empty and 'channel' in dr.columns:
+                    edf_rec.direct_response = (
+                        dr[dr['channel'].isin(selected_channels)].reset_index(drop=True)
+                    )
+
             out_path = os.path.join(RESULTS_DIR, f'{edf_rec.file_name}_direct_response.csv')
             edf_rec.direct_response.to_csv(out_path, index=False)
             print(f'    saved → {out_path}')
