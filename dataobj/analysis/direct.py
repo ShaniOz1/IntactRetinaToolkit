@@ -499,7 +499,7 @@ def run_direct_response(
         return _empty_direct_df()
 
     if rec.source == 'rhs':
-        df = _run_rhs(rec, data_type, win_size_ms, plot=plot, output_folder=output_folder)
+        df = _run_rhs(rec, data_type, win_size_ms, threshold=threshold, plot=plot, output_folder=output_folder)
         # RHS amplitudes are in µV — convert to mV to match EDF
         if not df.empty:
             df['amplitude_mV'] = df['amplitude_mV'] / 1000.0
@@ -596,7 +596,7 @@ def _run_edf(rec, win_size_ms: float, threshold: float | None = None) -> pd.Data
 # RHS pipeline
 # ─────────────────────────────────────────────────────────────
 
-def _run_rhs(rec, data_type: str, win_size_ms: float, plot: bool = True, output_folder: str | None = None) -> pd.DataFrame:
+def _run_rhs(rec, data_type: str, win_size_ms: float, threshold: float | None = None, plot: bool = True, output_folder: str | None = None) -> pd.DataFrame:
     """
     Dispatch to the appropriate RHS detection method based on data_type.
 
@@ -609,7 +609,7 @@ def _run_rhs(rec, data_type: str, win_size_ms: float, plot: bool = True, output_
     if data_type == 'raw':
         return _run_rhs_raw(rec, plot=plot, output_folder=output_folder)
     elif data_type == 'blanked':
-        return _run_threshold_detection(rec, win_size_ms)
+        return _run_threshold_detection(rec, win_size_ms, threshold)
     else:
         raise ValueError(
             f"data_type must be 'raw' or 'blanked'; got {data_type!r}"
@@ -838,6 +838,7 @@ def _run_rhs_raw(
         plt.tight_layout()
         if output_folder:
             import os
+            plt.show()
             fig.savefig(os.path.join(output_folder, f'{rec.file_name}_direct_response.png'),
                         dpi=150, bbox_inches='tight')
             plt.close(fig)
@@ -876,6 +877,7 @@ def _run_rhs_raw(
         plt.tight_layout()
         if output_folder:
             import os
+            plt.show()
             fig2.savefig(os.path.join(output_folder, f'{rec.file_name}_artifact.png'),
                          dpi=150, bbox_inches='tight')
             plt.close(fig2)

@@ -35,6 +35,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 
+from dataobj.channel_utils import mea_name_to_location
+
 
 # ── analysis parameters ───────────────────────────────────────────────────────
 
@@ -53,7 +55,8 @@ SOURCE_DIR  = r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1'
 GLUCOSE_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\ex_vivo_glucose'
 
 # Reference channels for the 2025.11.12 retina (glucose experiment)
-ALLOWED_CHANNELS: set[str] = {'K9', 'D11'}
+# ALLOWED_CHANNELS: set[str] = {'K9', 'D11'}
+ALLOWED_CHANNELS: set[str] = {'K9', 'J9','L9',  'D11', 'K10', 'C11'}
 
 
 # ── build EDF → phase-folder lookup from SOURCE_DIR ───────────────────────────
@@ -123,10 +126,14 @@ def load_glucose_pulses(csv_path: str) -> list[dict]:
         short_ch = str(ch).split()[-1].upper()
         if short_ch not in ALLOWED_CHANNELS:
             continue
+        cols = ['pulse_index', 'amplitude_mV']
+        for _extra in ('latency_ms', 'width_ms'):
+            if _extra in ch_df.columns:
+                cols.append(_extra)
         pulses = (ch_df[
                       (ch_df['pulse_index'] >= START_PULSE) &
                       (ch_df['pulse_index'] <  START_PULSE + PULSE_LIMIT)
-                  ][['pulse_index', 'amplitude_mV']]
+                  ][cols]
                   .copy()
                   .reset_index(drop=True))
         records.append({'channel': short_ch, 'pulses': pulses})
@@ -383,3 +390,550 @@ for col_i in range(n_phases):
 plt.tight_layout(h_pad=0.5, w_pad=0.5)
 plt.show()
 plt.close(fig_hist)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# INTACT GLUCOSE
+# ════════════════════════════════════════════════════════════════════════════════
+
+INTACT_GLUCOSE_DIR = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_glucose'
+INTACT_PHASE_BASE  = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.11.05 E14\Retina2'
+
+_INTACT_PHASE_RE = re.compile(r'^phase\d+$', re.IGNORECASE)
+
+# Build RHS-basename (lower) → phase-folder-name lookup
+_rhs_to_phase: dict[str, str] = {}
+for _root, _dirs, _files in os.walk(INTACT_PHASE_BASE):
+    _top = os.path.relpath(_root, INTACT_PHASE_BASE).split(os.sep)[0]
+    if _INTACT_PHASE_RE.match(_top):
+        for _f in _files:
+            if _f.lower().endswith('.rhs'):
+                _rhs_to_phase[_f.lower()] = _top
+
+INTACT_PHASE_ORDER: list[str] = sorted(set(_rhs_to_phase.values()))[:3]
+print(f'Intact phase folders: {INTACT_PHASE_ORDER}')
+print(f'RHS files indexed   : {len(_rhs_to_phase)}\n')
+
+
+def intact_csv_to_phase(csv_fname: str) -> Optional[str]:
+    """Recover the source RHS basename from a CSV name and look up its phase."""
+    # 'Retina2_Ch4_..._251105_160302.rhs_direct_response.csv'
+    #   → strip 'Retina2_'  and '_direct_response.csv'
+    stem = re.sub(r'^Retina\d+_', '', csv_fname, flags=re.IGNORECASE)
+    stem = re.sub(r'_direct_response\.csv$', '', stem, flags=re.IGNORECASE)
+    return _rhs_to_phase.get(stem.lower())
+
+
+def load_intact_glucose_pulses(csv_path: str) -> list[dict]:
+    """Load pulse data for all probe channels from one intact glucose CSV."""
+    df = pd.read_csv(csv_path)
+    if df.empty or 'amplitude_mV' not in df.columns or 'pulse_index' not in df.columns:
+        return []
+    df = df.dropna(subset=['pulse_index']).copy()
+    df['amplitude_mV'] = df['amplitude_mV'].abs()
+    df['channel'] = pd.to_numeric(df['channel'], errors='coerce')
+    df = df.dropna(subset=['channel'])
+
+    records = []
+    for ch, ch_df in df.groupby('channel'):
+        cols = ['pulse_index', 'amplitude_mV']
+        for _extra in ('latency_ms', 'width_ms'):
+            if _extra in ch_df.columns:
+                cols.append(_extra)
+        pulses = (ch_df[
+                      (ch_df['pulse_index'] >= START_PULSE) &
+                      (ch_df['pulse_index'] <  START_PULSE + PULSE_LIMIT)
+                  ][cols]
+                  .copy().reset_index(drop=True))
+        if not pulses.empty:
+            records.append({'channel': int(ch), 'pulses': pulses})
+    return records
+
+
+# ── load ───────────────────────────────────────────────────────────────────────
+
+intact_glucose_records: list[dict] = []
+
+for path in sorted(glob.glob(os.path.join(INTACT_GLUCOSE_DIR, '*_direct_response.csv'))):
+    fname = os.path.basename(path)
+    phase = intact_csv_to_phase(fname)
+    if phase is None:
+        print(f'  [intact skip] no phase match: {fname}')
+        continue
+
+    current, freq = parse_current_freq(fname)
+    if current is None:
+        print(f'  [intact skip] no current/freq: {fname}')
+        continue
+
+    for ch_rec in load_intact_glucose_pulses(path):
+        intact_glucose_records.append({
+            'phase':      phase,
+            'current_uA': current,
+            'freq_Hz':    freq,
+            'channel':    ch_rec['channel'],
+            'pulses':     ch_rec['pulses'],
+            'filename':   fname,
+        })
+
+_intact_unique_channels = sorted({r['channel'] for r in intact_glucose_records})
+print(f'Intact glucose: {len(intact_glucose_records)} records loaded.')
+print(f'  unique channels ({len(_intact_unique_channels)}): {_intact_unique_channels}\n')
+
+# ── group by phase ─────────────────────────────────────────────────────────────
+
+intact_by_phase: dict[str, list[dict]] = {}
+for rec in intact_glucose_records:
+    intact_by_phase.setdefault(rec['phase'], []).append(rec)
+
+intact_present = [p for p in INTACT_PHASE_ORDER if p in intact_by_phase]
+n_intact       = len(intact_present)
+
+if n_intact == 0:
+    print('No intact glucose data — skipping intact figures.')
+else:
+
+    # ── overview figure ────────────────────────────────────────────────────────
+
+    fig_iv, axes_iv = plt.subplots(2, n_intact,
+                                   figsize=(4 * n_intact, 6),
+                                   sharex=True)
+    if n_intact == 1:
+        axes_iv = [[axes_iv[0]], [axes_iv[1]]]
+
+    for col_i, phase in enumerate(intact_present):
+        ax = axes_iv[0][col_i]
+        for rec in intact_by_phase[phase]:
+            norm_df = _normalise(rec)
+            if norm_df is None:
+                continue
+            y_smooth = (norm_df['norm_amp']
+                        .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+                        .mean())
+            ax.plot(norm_df['pulse_index'], y_smooth,
+                    color='black', linewidth=0.4, alpha=0.4)
+        for _y in _grid_ys:
+            ax.axhline(_y, color='grey', linewidth=0.35, alpha=0.3)
+        ax.set_ylim(-1, 1)
+        ax.set_title(phase, fontsize=10, loc='left', pad=3)
+        ax.tick_params(labelsize=6)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes_iv[0][0].set_ylabel('(y − y₀) / y₀', fontsize=7)
+
+    for col_i, phase in enumerate(intact_present):
+        ax = axes_iv[1][col_i]
+        for rec in intact_by_phase[phase]:
+            per_pulse = (rec['pulses']
+                         .groupby('pulse_index')['amplitude_mV']
+                         .max().reset_index())
+            y_smooth = (per_pulse['amplitude_mV']
+                        .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+                        .mean())
+            ax.plot(per_pulse['pulse_index'], y_smooth,
+                    color='black', linewidth=0.4, alpha=0.4)
+        ax.set_xlim(START_PULSE, START_PULSE + PULSE_LIMIT)
+        ax.set_ylim(0, 7)
+        ax.set_xlabel('# pulse', fontsize=7)
+        ax.tick_params(labelsize=6)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes_iv[1][0].set_ylabel('amplitude (mV)', fontsize=7)
+
+    fig_iv.suptitle('Intact glucose — instability overview', fontsize=10)
+    plt.tight_layout()
+    plt.show()
+    plt.close(fig_iv)
+
+    # ── histogram figure ───────────────────────────────────────────────────────
+
+    fig_ih, axes_ih = plt.subplots(n_hist_rows, n_intact,
+                                   figsize=(3 * n_intact, 1.6 * n_hist_rows),
+                                   sharex=True, sharey=True)
+    if n_hist_rows == 1 and n_intact == 1:
+        axes_ih = [[axes_ih]]
+    elif n_hist_rows == 1:
+        axes_ih = [list(axes_ih)]
+    elif n_intact == 1:
+        axes_ih = [[axes_ih[r]] for r in range(n_hist_rows)]
+
+    for row_i, pulse_idx in enumerate(HIST_PULSES):
+        for col_i, phase in enumerate(intact_present):
+            ax = axes_ih[row_i][col_i]
+            vals = [v for rec in intact_by_phase[phase]
+                    if (v := _value_at_pulse(rec, pulse_idx)) is not None
+                    and np.isfinite(v)]
+
+            if vals:
+                weights = [100.0 / len(vals)] * len(vals)
+                bar_heights, _ = np.histogram(vals, bins=_hist_bins, weights=weights)
+                ax.hist(vals, bins=_hist_bins, weights=weights,
+                        color='#c8c8c8', edgecolor='black', linewidth=0.4, alpha=0.9)
+                ax.axvline(0, color='black', linewidth=0.6, linestyle='--', alpha=0.4)
+                if len(vals) > 1:
+                    x_kde    = np.linspace(-1, 1, 300)
+                    kde_vals = gaussian_kde(vals)(x_kde)
+                    max_bar  = bar_heights.max()
+                    if kde_vals.max() > 0 and max_bar > 0:
+                        kde_vals = kde_vals / kde_vals.max() * max_bar
+                    ax.plot(x_kde, kde_vals, color='black', linewidth=1.5)
+
+            ax.set_xlim(-1, 1)
+            ax.set_title(f'{phase}  pulse {pulse_idx}', fontsize=7, loc='left', pad=2)
+            ax.tick_params(labelsize=5, length=2, pad=1)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+        axes_ih[row_i][0].set_ylabel('%', fontsize=6)
+
+    for col_i in range(n_intact):
+        axes_ih[-1][col_i].set_xlabel('(y − y₀) / y₀', fontsize=6)
+
+    fig_ih.suptitle('Intact glucose — instability histograms', fontsize=10)
+    plt.tight_layout(h_pad=0.5, w_pad=0.5)
+    plt.show()
+    plt.close(fig_ih)
+
+
+# ── latency distribution: ex vivo (row 0) then intact (row 1) ─────────────────
+
+def _latencies(records_by_ph, phases):
+    """Return {phase: [latency_ms, ...]} with only finite detected values."""
+    out = {}
+    for p in phases:
+        vals = []
+        for rec in records_by_ph.get(p, []):
+            if 'latency_ms' in rec['pulses'].columns:
+                vals.extend(
+                    rec['pulses']['latency_ms']
+                    .dropna()
+                    .values.tolist()
+                )
+        out[p] = [v for v in vals if np.isfinite(v)]
+    return out
+
+
+ev_lat  = _latencies(records_by_phase,  present_phases)
+_n_ev   = len(present_phases)
+
+_has_intact_lat = n_intact > 0
+in_lat  = _latencies(intact_by_phase, intact_present) if _has_intact_lat else {}
+_n_in   = n_intact if _has_intact_lat else 0
+
+_n_lat_cols = max(_n_ev, _n_in)
+_n_lat_rows = 1 + (1 if _has_intact_lat else 0)
+
+fig_lat, axes_lat = plt.subplots(_n_lat_rows, _n_lat_cols,
+                                 figsize=(2.8 * _n_lat_cols, 2.8 * _n_lat_rows),
+                                 sharey=False)
+
+if _n_lat_rows == 1:
+    axes_lat = [list(np.atleast_1d(axes_lat))]
+else:
+    axes_lat = [list(row) for row in axes_lat]
+
+def _phase_short(phase: str) -> str:
+    """Extract 'normal' / 'low' from phase name, or the phase number for intact."""
+    m = re.search(r'(normal|low)', phase, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    m = re.search(r'\d+', phase)
+    return m.group(0) if m else phase
+
+
+# ── helper: draw one distribution histogram ───────────────────────────────────
+def _lat_hist(ax, vals, corner_label, color='#c8c8c8', x_max=7, y_max=80):
+    if vals:
+        bins  = np.linspace(0, x_max, 20)
+        weights = [100.0 / len(vals)] * len(vals)
+        bar_heights, _ = np.histogram(vals, bins=bins, weights=weights)
+        ax.hist(vals, bins=bins, weights=weights,
+                color=color, edgecolor='black', linewidth=0.4, alpha=0.9)
+        if len(vals) > 1:
+            x_kde    = np.linspace(0, x_max, 300)
+            kde_vals = gaussian_kde(vals)(x_kde)
+            max_bar  = bar_heights.max()
+            if kde_vals.max() > 0 and max_bar > 0:
+                kde_vals = kde_vals / kde_vals.max() * max_bar
+            ax.plot(x_kde, kde_vals, color='black', linewidth=1.5)
+    ax.set_xlim(0, x_max)
+    ax.set_ylim(0, y_max)
+    ax.text(0.03, 0.97, corner_label, transform=ax.transAxes,
+            fontsize=6, va='top', ha='left', style='italic', color='dimgrey')
+    ax.tick_params(labelsize=5, length=2, pad=1)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+
+for col_i, phase in enumerate(present_phases):
+    _lat_hist(axes_lat[0][col_i], ev_lat[phase],
+              f'ex vivo · {_phase_short(phase)}')
+for col_i in range(_n_ev, _n_lat_cols):
+    axes_lat[0][col_i].set_visible(False)
+axes_lat[0][0].set_ylabel('%', fontsize=6)
+
+_INTACT_PHASE_LABELS = ['normal', 'low', 'normal']
+
+if _has_intact_lat:
+    for col_i, phase in enumerate(intact_present):
+        phase_label = _INTACT_PHASE_LABELS[col_i] if col_i < len(_INTACT_PHASE_LABELS) else str(col_i + 1)
+        _lat_hist(axes_lat[1][col_i], in_lat[phase],
+                  f'intact · {phase_label}',
+                  color='#a8c8e8')
+    for col_i in range(_n_in, _n_lat_cols):
+        axes_lat[1][col_i].set_visible(False)
+    axes_lat[1][0].set_ylabel('%', fontsize=6)
+    for ax in axes_lat[1]:
+        ax.set_xlabel('latency (ms)', fontsize=6)
+else:
+    for ax in axes_lat[0]:
+        ax.set_xlabel('latency (ms)', fontsize=6)
+
+fig_lat.suptitle('Latency distribution per phase', fontsize=10)
+plt.tight_layout(h_pad=0.5, w_pad=0.5)
+plt.show()
+plt.close(fig_lat)
+
+
+# ── shared helper: build a figure for any pulse-level metric ──────────────────
+
+def _metric_figure(col, xlabel, x_max, y_max, title):
+    """Draw a 2-row (ex vivo / intact) figure for a given pulses column."""
+    def _collect(records_by_ph, phases):
+        out = {}
+        for p in phases:
+            vals = []
+            for r in records_by_ph.get(p, []):
+                if col in r['pulses'].columns:
+                    vals.extend(r['pulses'][col].dropna().values.tolist())
+            out[p] = [v for v in vals if np.isfinite(v) and v > 0]
+        return out
+
+    ev_vals = _collect(records_by_phase, present_phases)
+    in_vals = _collect(intact_by_phase, intact_present) if _has_intact_lat else {}
+
+    n_rows = 1 + (1 if _has_intact_lat else 0)
+    n_cols = max(_n_ev, _n_in if _has_intact_lat else 0)
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(2.8 * n_cols, 2.8 * n_rows),
+                             sharey=False)
+    if n_rows == 1:
+        axes = [list(np.atleast_1d(axes))]
+    else:
+        axes = [list(row) for row in axes]
+
+    for col_i, phase in enumerate(present_phases):
+        _lat_hist(axes[0][col_i], ev_vals[phase],
+                  f'ex vivo · {_phase_short(phase)}',
+                  x_max=x_max, y_max=y_max)
+    for col_i in range(_n_ev, n_cols):
+        axes[0][col_i].set_visible(False)
+    axes[0][0].set_ylabel('%', fontsize=6)
+
+    if _has_intact_lat:
+        for col_i, phase in enumerate(intact_present):
+            phase_label = _INTACT_PHASE_LABELS[col_i] if col_i < len(_INTACT_PHASE_LABELS) else str(col_i + 1)
+            _lat_hist(axes[1][col_i], in_vals[phase],
+                      f'intact · {phase_label}',
+                      color='#a8c8e8', x_max=x_max, y_max=y_max)
+        for col_i in range(_n_in, n_cols):
+            axes[1][col_i].set_visible(False)
+        axes[1][0].set_ylabel('%', fontsize=6)
+        for ax in axes[1]:
+            ax.set_xlabel(xlabel, fontsize=6)
+    else:
+        for ax in axes[0]:
+            ax.set_xlabel(xlabel, fontsize=6)
+
+    fig.suptitle(title, fontsize=10)
+    plt.tight_layout(h_pad=0.5, w_pad=0.5)
+    plt.show()
+    plt.close(fig)
+
+
+_metric_figure('width_ms',     'width (ms)', x_max=5,  y_max=80, title='Width distribution per phase')
+_metric_figure('amplitude_mV', 'amplitude (mV)', x_max=2, y_max=80, title='Amplitude distribution per phase')
+
+
+# ── speed figure: distance / latency ──────────────────────────────────────────
+
+# Ex vivo: stim electrode G10, pitch 200 µm
+_EV_STIM   = 'G10'
+_MEA_PITCH = 0.2   # mm per electrode step
+
+def _mea_dist_mm(ch: str) -> float:
+    s = mea_name_to_location(_EV_STIM)
+    t = mea_name_to_location(ch)
+    if s is None or t is None:
+        return float('nan')
+    return np.sqrt((s[0] - t[0]) ** 2 + (s[1] - t[1]) ** 2) * _MEA_PITCH
+
+EV_DIST_MM: dict[str, float] = {ch: _mea_dist_mm(ch) for ch in ALLOWED_CHANNELS}
+print('Ex vivo distances from stim electrode:')
+for ch, d in EV_DIST_MM.items():
+    print(f'  {_EV_STIM} → {ch}: {d:.3f} mm')
+
+# Intact: stim electrode Ch4, distances in mm
+IN_DIST_MM: dict[int, float] = {
+    2:  0.9,
+    6:  0.5,
+    7:  0.8,
+    24: 0.7,
+}
+
+
+def _collect_speeds(records_by_ph, phases, dist_map):
+    """Return {phase: [speed_m_s, ...]} using distance_mm / latency_ms = m/s."""
+    out = {}
+    for p in phases:
+        speeds = []
+        for r in records_by_ph.get(p, []):
+            ch   = r['channel']
+            dist = dist_map.get(ch)
+            if dist is None or not np.isfinite(dist):
+                continue
+            if 'latency_ms' not in r['pulses'].columns:
+                continue
+            for lat in r['pulses']['latency_ms'].dropna().values:
+                if lat > 0:
+                    speeds.append(dist / lat)   # mm/ms = m/s
+        out[p] = [v for v in speeds if np.isfinite(v)]
+    return out
+
+
+ev_speeds = _collect_speeds(records_by_phase, present_phases, EV_DIST_MM)
+in_speeds = _collect_speeds(intact_by_phase,  intact_present, IN_DIST_MM) if _has_intact_lat else {}
+
+n_rows_sp = 1 + (1 if _has_intact_lat else 0)
+n_cols_sp = max(_n_ev, _n_in if _has_intact_lat else 0)
+
+fig_sp, axes_sp = plt.subplots(n_rows_sp, n_cols_sp,
+                               figsize=(2.8 * n_cols_sp, 2.8 * n_rows_sp),
+                               sharey=False)
+if n_rows_sp == 1:
+    axes_sp = [list(np.atleast_1d(axes_sp))]
+else:
+    axes_sp = [list(row) for row in axes_sp]
+
+for col_i, phase in enumerate(present_phases):
+    _lat_hist(axes_sp[0][col_i], ev_speeds[phase],
+              f'ex vivo · {_phase_short(phase)}',
+              x_max=1.0, y_max=80)
+for col_i in range(_n_ev, n_cols_sp):
+    axes_sp[0][col_i].set_visible(False)
+axes_sp[0][0].set_ylabel('%', fontsize=6)
+
+if _has_intact_lat:
+    for col_i, phase in enumerate(intact_present):
+        phase_label = _INTACT_PHASE_LABELS[col_i] if col_i < len(_INTACT_PHASE_LABELS) else str(col_i + 1)
+        _lat_hist(axes_sp[1][col_i], in_speeds[phase],
+                  f'intact · {phase_label}',
+                  color='#a8c8e8', x_max=1.0, y_max=80)
+    for col_i in range(_n_in, n_cols_sp):
+        axes_sp[1][col_i].set_visible(False)
+    axes_sp[1][0].set_ylabel('%', fontsize=6)
+    for ax in axes_sp[1]:
+        ax.set_xlabel('speed (m/s)', fontsize=6)
+else:
+    for ax in axes_sp[0]:
+        ax.set_xlabel('speed (m/s)', fontsize=6)
+
+fig_sp.suptitle('Propagation speed per phase  (distance / latency)', fontsize=10)
+plt.tight_layout(h_pad=0.5, w_pad=0.5)
+plt.show()
+plt.close(fig_sp)
+
+
+# ── scatter: distance vs latency / vs pulse-N norm ────────────────────────────
+
+_SCATTER_PULSE_G = 20
+
+_all_freqs_g  = sorted({r['freq_Hz'] for r in glucose_records + intact_glucose_records})
+_freq_cmap_g  = plt.get_cmap('tab10')
+_freq_color_g = {f: _freq_cmap_g(i % 10) for i, f in enumerate(_all_freqs_g)}
+_n_fg         = len(_all_freqs_g)
+_freq_jitter_g = {f: (i - (_n_fg - 1) / 2) * 0.02 for i, f in enumerate(_all_freqs_g)}
+
+# First pass: shared axis limits
+_adl_g, _adp_g = [], []
+for _recs, _dmap in [(glucose_records, EV_DIST_MM), (intact_glucose_records, IN_DIST_MM)]:
+    for _r in _recs:
+        _d = _dmap.get(_r['channel'])
+        if _d is None or not np.isfinite(_d):
+            continue
+        if 'latency_ms' in _r['pulses'].columns:
+            for _lat in _r['pulses']['latency_ms'].dropna().values:
+                if np.isfinite(_lat) and _lat > 0:
+                    _adl_g.append((_d, _lat))
+        _pv = _value_at_pulse(_r, _SCATTER_PULSE_G)
+        if _pv is not None and np.isfinite(_pv):
+            _adp_g.append((_d, _pv))
+
+_xlim_lat_g = (0, max(d for d, _ in _adl_g) * 1.1) if _adl_g else (0, 1)
+_ylim_lat_g = (0, max(l for _, l in _adl_g) * 1.1) if _adl_g else (0, 10)
+_xlim_p_g   = (0, max(d for d, _ in _adp_g) * 1.1) if _adp_g else (0, 1)
+_pv_g       = [v for _, v in _adp_g]
+_ylim_p_g   = ((min(_pv_g) * 1.1, max(_pv_g) * 1.1) if _pv_g else (-1, 1))
+
+fig_sc_g, axes_sc_g = plt.subplots(2, 2, figsize=(8, 6))
+
+for row_i, (sc_recs, dist_map, src_label) in enumerate([
+    (glucose_records,        EV_DIST_MM, 'Ex vivo'),
+    (intact_glucose_records, IN_DIST_MM, 'Intact'),
+]):
+    ax_lat = axes_sc_g[row_i, 0]
+    ax_p   = axes_sc_g[row_i, 1]
+
+    for rec in sc_recs:
+        dist = dist_map.get(rec['channel'])
+        if dist is None or not np.isfinite(dist):
+            continue
+        color  = _freq_color_g[rec['freq_Hz']]
+        jitter = _freq_jitter_g[rec['freq_Hz']]
+
+        if 'latency_ms' in rec['pulses'].columns:
+            for lat in rec['pulses']['latency_ms'].dropna().values:
+                if np.isfinite(lat) and lat > 0:
+                    ax_lat.scatter(dist + jitter, lat, color=color, s=12,
+                                   alpha=0.6, linewidths=0, zorder=3)
+
+        pv = _value_at_pulse(rec, _SCATTER_PULSE_G)
+        if pv is not None and np.isfinite(pv):
+            ax_p.scatter(dist + jitter, pv, color=color, s=12,
+                         alpha=0.6, linewidths=0, zorder=3)
+
+    ax_lat.set_xlim(_xlim_lat_g);  ax_lat.set_ylim(_ylim_lat_g)
+    ax_p.set_xlim(_xlim_p_g);      ax_p.set_ylim(_ylim_p_g)
+
+    for ax in (ax_lat, ax_p):
+        ax.tick_params(labelsize=6)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    ax_lat.set_xlabel('distance from stim (mm)', fontsize=7)
+    ax_lat.set_ylabel('latency (ms)', fontsize=7)
+    ax_lat.set_title(f'{src_label} — latency vs distance', fontsize=8, loc='left', pad=3)
+
+    ax_p.axhline(0, color='grey', linewidth=0.7, linestyle='--', alpha=0.5)
+    ax_p.set_xlabel('distance from stim (mm)', fontsize=7)
+    ax_p.set_ylabel(f'(y − y₀) / y₀  at pulse {_SCATTER_PULSE_G}', fontsize=7)
+    ax_p.set_title(f'{src_label} — pulse {_SCATTER_PULSE_G} vs distance',
+                   fontsize=8, loc='left', pad=3)
+
+_freq_handles_g = [plt.Line2D([0], [0], marker='o', color='w',
+                               markerfacecolor=_freq_color_g[f], markersize=5,
+                               label=f'{f:g} Hz')
+                   for f in _all_freqs_g]
+axes_sc_g[0, 0].legend(handles=_freq_handles_g, fontsize=5, loc='upper right',
+                       framealpha=0.5, handlelength=0.8, labelspacing=0.3)
+
+fig_sc_g.suptitle(
+    f'Distance from stim vs latency / pulse-{_SCATTER_PULSE_G}  ·  color = frequency',
+    fontsize=10,
+)
+plt.tight_layout()
+plt.show()
+plt.close(fig_sc_g)

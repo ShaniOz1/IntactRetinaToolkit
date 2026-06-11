@@ -13,14 +13,9 @@ import traceback
 
 from dataobj import load_rhs
 
-BASE_DIR     = r'C:\Shani\SoftC prob\16Ch prob experiments'
-RESULTS_BASE = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\NEW'
+BASE_DIR     = r'C:\Shani\SoftC prob\16Ch prob experiments\2025.11.05 E14\Retina2'
+RESULTS_BASE = r'C:\Users\YHLab\PycharmProjects\IntactRetinaToolkit\Results\Intact_glucose'
 
-# Experiment date folders to include (must start with one of these prefixes)
-EXPERIMENT_DATES = [
-    '2025.05.25 E14',
-    '2025.05.28 E14',
-]
 
 # ============================================================
 #  PARAMS
@@ -46,15 +41,21 @@ def retina_from_path(path):
     return 'unknown'
 
 
+_PHASE_RE = re.compile(r'^phase\d+$', re.IGNORECASE)
+
+
 def find_rhs_files():
-    """Return sorted list of (path, retina_name) under Retina* folders of the selected dates."""
+    """Return sorted (path, retina_name) for .rhs files anywhere inside phase1–phase5 folders."""
     entries = []
-    for date in EXPERIMENT_DATES:
-        date_dir = os.path.join(BASE_DIR, date)
-        for retina_dir in sorted(glob.glob(os.path.join(date_dir, 'Retina*'))):
-            for path in sorted(glob.glob(os.path.join(retina_dir, '**', '*.rhs'), recursive=True)):
-                entries.append((path, retina_from_path(path)))
-    return entries
+    for root, dirs, files in os.walk(BASE_DIR):
+        # Accept if the top-level folder relative to BASE_DIR is a phase folder
+        top_folder = os.path.relpath(root, BASE_DIR).split(os.sep)[0]
+        if _PHASE_RE.match(top_folder):
+            retina = retina_from_path(root)
+            for fname in sorted(files):
+                if fname.lower().endswith('.rhs'):
+                    entries.append((os.path.join(root, fname), retina))
+    return sorted(entries)
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ if __name__ == '__main__':
     rhs_entries = find_rhs_files()
 
     if not rhs_entries:
-        print(f'No .rhs files found under {EXPERIMENT_DATES}')
+        print(f'No .rhs files found under {BASE_DIR}')
         exit()
 
     print(f'Found {len(rhs_entries)} .rhs files.\n')
@@ -93,7 +94,7 @@ if __name__ == '__main__':
                                        threshold=DIRECT_THRESHOLD_MV,
                                        data_type='raw',
                                        plot=True,
-                                       output_folder=None)
+                                       output_folder=RESULTS_BASE)
 
             df = rec.direct_response
             if df is None or df.empty:
@@ -102,25 +103,22 @@ if __name__ == '__main__':
                 continue
 
             available = sorted(df['channel'].apply(lambda c: c.split()[-1].upper()).unique())
-            for idx, ch in enumerate(available):
-                print(f'      [{idx}] {ch}')
-            raw_input_str = input('    Indices to include (space-separated), or Enter to skip: ').strip()
+            print(f'    Available channels: {" ".join(available)}')
+            raw_input_str = input('    Channel names to save (space-separated), or Enter to skip: ').strip()
 
             if not raw_input_str:
                 print('    No channels specified — skipping.')
                 skipped.append(path)
                 continue
 
-            try:
-                indices  = [int(x) for x in raw_input_str.split()]
-                selected = {available[i] for i in indices if 0 <= i < len(available)}
-            except ValueError:
-                print('    Invalid input — skipping.')
-                skipped.append(path)
-                continue
+            typed    = {n.upper() for n in raw_input_str.split()}
+            selected = typed & set(available)
+            unknown  = typed - set(available)
+            if unknown:
+                print(f'    Unknown channel names ignored: {", ".join(sorted(unknown))}')
 
             if not selected:
-                print('    No valid indices — skipping.')
+                print('    No valid channel names — skipping.')
                 skipped.append(path)
                 continue
 

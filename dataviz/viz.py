@@ -714,6 +714,7 @@ def plot_spikes_layout_mea(
 
     if save and output_folder:
         fig.savefig(f'{output_folder}/spikes_layout_mea_{data_type}.png', dpi=150)
+        plt.show()
         plt.close(fig)
     else:
         plt.show()
@@ -787,11 +788,11 @@ def plot_spikes_layout_probe16(
         ylim = (-500, 500)   # ±0.5 mV in µV
     elif window_vals:
         all_wins = np.concatenate(window_vals)
-        ymin = math.floor(float(all_wins.min()) / 50) * 50
-        ymax = math.ceil( float(all_wins.max()) / 50) * 50
-        ylim = (ymin, ymax)
+        ylim = (math.floor(float(all_wins.min()) / 50) * 50,
+                math.ceil( float(all_wins.max()) / 50) * 50)
     else:
         ylim = (-50, 50)
+    ymin, ymax = ylim
 
     # Physical ring layout — channel order around the circle starting at
     # 3 o'clock, going counter-clockwise.  99 = empty slot.

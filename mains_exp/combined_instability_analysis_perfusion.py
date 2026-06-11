@@ -124,10 +124,13 @@ def load_perfusion_pulses(csv_path: str) -> list[dict]:
         short_ch = str(ch).split()[-1].upper()
         if ALLOWED_CHANNELS and short_ch not in ALLOWED_CHANNELS:
             continue
+        cols = ['pulse_index', 'amplitude_mV']
+        if 'latency_ms' in ch_df.columns:
+            cols.append('latency_ms')
         pulses = (ch_df[
                       (ch_df['pulse_index'] >= START_PULSE) &
                       (ch_df['pulse_index'] <  START_PULSE + PULSE_LIMIT)
-                  ][['pulse_index', 'amplitude_mV']]
+                  ][cols]
                   .copy()
                   .reset_index(drop=True))
         records.append({'channel': short_ch, 'pulses': pulses})
@@ -396,3 +399,61 @@ for col_i in range(n_phases):
 plt.tight_layout(h_pad=0.5, w_pad=0.5)
 plt.show()
 plt.close(fig_hist)
+
+
+# ── latency distribution: one subplot per phase ───────────────────────────────
+
+def _phase_short(phase: str) -> str:
+    """Extract the descriptive part of a phase name, e.g. 'phase1-normal' → 'normal'."""
+    m = re.sub(r'^phase\d+-?', '', phase, flags=re.IGNORECASE).strip()
+    return m if m else phase
+
+
+def _lat_hist(ax, vals, corner_label, color='#c8c8c8'):
+    x_max = 7
+    if vals:
+        bins  = np.linspace(0, x_max, 20)
+        weights = [100.0 / len(vals)] * len(vals)
+        bar_heights, _ = np.histogram(vals, bins=bins, weights=weights)
+        ax.hist(vals, bins=bins, weights=weights,
+                color=color, edgecolor='black', linewidth=0.4, alpha=0.9)
+        if len(vals) > 1:
+            x_kde    = np.linspace(0, x_max, 300)
+            kde_vals = gaussian_kde(vals)(x_kde)
+            max_bar  = bar_heights.max()
+            if kde_vals.max() > 0 and max_bar > 0:
+                kde_vals = kde_vals / kde_vals.max() * max_bar
+            ax.plot(x_kde, kde_vals, color='black', linewidth=1.5)
+    ax.set_xlim(0, x_max)
+    ax.set_ylim(0, 50)
+    ax.text(0.03, 0.97, corner_label, transform=ax.transAxes,
+            fontsize=6, va='top', ha='left', style='italic', color='dimgrey')
+    ax.tick_params(labelsize=5, length=2, pad=1)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+
+lat_vals: dict[str, list[float]] = {}
+for phase in present_phases:
+    vals = []
+    for rec in records_by_phase[phase]:
+        if 'latency_ms' in rec['pulses'].columns:
+            vals.extend(rec['pulses']['latency_ms'].dropna().values.tolist())
+    lat_vals[phase] = [v for v in vals if np.isfinite(v)]
+
+fig_lat, axes_lat = plt.subplots(1, n_phases,
+                                 figsize=(2.8 * n_phases, 2.8),
+                                 sharey=False)
+if n_phases == 1:
+    axes_lat = [axes_lat]
+
+for col_i, phase in enumerate(present_phases):
+    _lat_hist(axes_lat[col_i], lat_vals[phase], _phase_short(phase))
+    axes_lat[col_i].set_xlabel('latency (ms)', fontsize=6)
+
+axes_lat[0].set_ylabel('%', fontsize=6)
+
+fig_lat.suptitle('Latency distribution per phase', fontsize=10)
+plt.tight_layout(h_pad=0.5, w_pad=0.5)
+plt.show()
+plt.close(fig_lat)

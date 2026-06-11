@@ -67,9 +67,9 @@ if __name__ == '__main__':
         fname    = os.path.basename(path)
         out_path = os.path.join(RESULTS_DIR, f'{tag}_{fname}_direct_response.csv')
 
-        if os.path.exists(out_path):
-            print(f'[{i}/{len(entries)}] already exists, skipping: {fname}')
-            continue
+        # if os.path.exists(out_path):
+        #     print(f'[{i}/{len(entries)}] already exists, skipping: {fname}')
+        #     continue
 
         print(f'[{i}/{len(entries)}] [{tag}] {fname}')
         try:
@@ -77,7 +77,8 @@ if __name__ == '__main__':
             rec.filter()
             rec.blank(duration_ms=BLANK_MS, source='filtered_data')
             rec.detect_direct_response(win_size_ms=DIRECT_WIN_MS,
-                                       threshold=DIRECT_THRESHOLD_MV)
+                                       threshold=DIRECT_THRESHOLD_MV,
+                                       plot=True)
             rec.direct_response.to_csv(out_path, index=False)
             print(f'    saved → {out_path}')
         except Exception:

@@ -26,8 +26,8 @@ RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.pa
 DIRECT_WIN_MS       = 10.0
 BLANK_MS            = 1.5
 DIRECT_THRESHOLD_MV = 0.1  # set to None to compute threshold from data
-INTERACTIVE         = False  # set to True to review/adjust threshold per file before saving
-selected_channels = ['E_B-00071 C11', 'E_B-00071 D10', 'E_B-00071 D11', 'E_B-00071 D12', 'E_B-00071 F10', 'E_B-00071 J10', 'E_B-00071 J9', 'E_B-00071 K10', 'E_B-00071 K9', 'E_B-00071 L9']
+INTERACTIVE         = True  # set to True to review/adjust threshold per file before saving
+selected_channels =  None
 # =============================== =============================
 #  FILES TO RUN  (path, stim_electrode)
 # ============================================================
@@ -68,12 +68,11 @@ FILES = [
     # (r'C:\Shani\MEA mini1200\2025.11.02 e14_Shani\Retina3\phase1-normal\2025-11-02T16-13-18J9_20uA_300us_60us_100Hz_1000pulses.edf', 'J9'),
 
     # # ── Group 12 · 2025.11.12 Retina1 Phase1-Normal · G10 ──────────────────
-    (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-19-197uA_300us_60us_1Hz_100pulse_B-00071.edf',  'G10'),
-    (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-22-027uA_300us_60us_10Hz_100pulse_B-00071.edf', 'G10'),
+    # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-19-197uA_300us_60us_1Hz_100pulse_B-00071.edf',  'G10'),
     # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-22-347uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
-    # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-23-087uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
     (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-25-147uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
-    (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-26-217uA_300us_60us_50Hz_100pulse_B-00071.edf', 'G10'),
+    # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-26-217uA_300us_60us_50Hz_100pulse_B-00071.edf', 'G10'),
+
 
 ]
 
