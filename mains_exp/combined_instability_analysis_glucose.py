@@ -644,9 +644,9 @@ def _phase_short(phase: str) -> str:
 
 
 # ── helper: draw one distribution histogram ───────────────────────────────────
-def _lat_hist(ax, vals, corner_label, color='#c8c8c8', x_max=7, y_max=80):
+def _lat_hist(ax, vals, corner_label, color='#c8c8c8', x_max=7, y_max=80, n_bins=20, kde_lw=1.5):
     if vals:
-        bins  = np.linspace(0, x_max, 20)
+        bins  = np.linspace(0, x_max, n_bins)
         weights = [100.0 / len(vals)] * len(vals)
         bar_heights, _ = np.histogram(vals, bins=bins, weights=weights)
         ax.hist(vals, bins=bins, weights=weights,
@@ -657,7 +657,7 @@ def _lat_hist(ax, vals, corner_label, color='#c8c8c8', x_max=7, y_max=80):
             max_bar  = bar_heights.max()
             if kde_vals.max() > 0 and max_bar > 0:
                 kde_vals = kde_vals / kde_vals.max() * max_bar
-            ax.plot(x_kde, kde_vals, color='black', linewidth=1.5)
+            ax.plot(x_kde, kde_vals, color='black', linewidth=kde_lw)
     ax.set_xlim(0, x_max)
     ax.set_ylim(0, y_max)
     ax.text(0.03, 0.97, corner_label, transform=ax.transAxes,
@@ -699,20 +699,22 @@ plt.close(fig_lat)
 
 # ── shared helper: build a figure for any pulse-level metric ──────────────────
 
+def _collect_vals(records_by_ph, phases, col):
+    """Return {phase: [val, ...]} for a pulses column, finite & positive only."""
+    out = {}
+    for p in phases:
+        vals = []
+        for r in records_by_ph.get(p, []):
+            if col in r['pulses'].columns:
+                vals.extend(r['pulses'][col].dropna().values.tolist())
+        out[p] = [v for v in vals if np.isfinite(v) and v > 0]
+    return out
+
+
 def _metric_figure(col, xlabel, x_max, y_max, title):
     """Draw a 2-row (ex vivo / intact) figure for a given pulses column."""
-    def _collect(records_by_ph, phases):
-        out = {}
-        for p in phases:
-            vals = []
-            for r in records_by_ph.get(p, []):
-                if col in r['pulses'].columns:
-                    vals.extend(r['pulses'][col].dropna().values.tolist())
-            out[p] = [v for v in vals if np.isfinite(v) and v > 0]
-        return out
-
-    ev_vals = _collect(records_by_phase, present_phases)
-    in_vals = _collect(intact_by_phase, intact_present) if _has_intact_lat else {}
+    ev_vals = _collect_vals(records_by_phase, present_phases, col)
+    in_vals = _collect_vals(intact_by_phase, intact_present, col) if _has_intact_lat else {}
 
     n_rows = 1 + (1 if _has_intact_lat else 0)
     n_cols = max(_n_ev, _n_in if _has_intact_lat else 0)
@@ -937,3 +939,316 @@ fig_sc_g.suptitle(
 plt.tight_layout()
 plt.show()
 plt.close(fig_sc_g)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SUMMARY FIGURE: ex vivo glucose — one column per phase (Normal / Low / Normal)
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _print_stats_table(rows: list[tuple[str, list[float]]], title: str) -> None:
+    """Print a table of n / mean / median / std for each (label, vals) row."""
+    print(f'\n{title}')
+    header = f'  {"":<36}{"n":>6}{"mean":>10}{"median":>10}{"std":>10}'
+    sep    = '  ' + '-' * (len(header) - 2)
+    print(sep)
+    print(header)
+    print(sep)
+    for label, vals in rows:
+        if vals:
+            arr = np.array(vals)
+            print(f'  {label:<36}{len(arr):>6}{arr.mean():>10.3f}{np.median(arr):>10.3f}{arr.std():>10.3f}')
+        else:
+            print(f'  {label:<36}{0:>6}{"-":>10}{"-":>10}{"-":>10}')
+    print(sep)
+
+
+_SUM_PULSE = HIST_PULSES[-1]   # 50
+
+ev_width = _collect_vals(records_by_phase, present_phases, 'width_ms')
+
+_n_sum_rows = 6
+fig_sum, axes_sum = plt.subplots(_n_sum_rows, n_phases,
+                                  figsize=(1.6 * n_phases, 1.3 * _n_sum_rows),
+                                  sharey='row')
+if n_phases == 1:
+    axes_sum = axes_sum.reshape(-1, 1)
+
+# grey shades (one per frequency) for the latency-vs-distance row
+_grey_cmap_g = plt.get_cmap('Greys')
+_freq_grey_g = {f: _grey_cmap_g(0.35 + 0.5 * i / max(_n_fg - 1, 1))
+                for i, f in enumerate(_all_freqs_g)}
+
+_SUM_PHASE_LABELS = ['Normal', 'Medium', 'Normal']
+
+vals50_by_phase: dict[str, list[float]] = {}
+
+for col_i, phase in enumerate(present_phases):
+    recs = records_by_phase[phase]
+    phase_label = _SUM_PHASE_LABELS[col_i] if col_i < len(_SUM_PHASE_LABELS) else str(col_i + 1)
+    if col_i == 0:
+        phase_label = f'Glucose: {phase_label}'
+
+    # ── row 0: normalised traces vs # pulse ──────────────────────────────────────
+    ax_tr = axes_sum[0, col_i]
+    for rec in recs:
+        norm_df = _normalise(rec)
+        if norm_df is None:
+            continue
+        y_smooth = (norm_df['norm_amp']
+                    .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+                    .mean())
+        ax_tr.plot(norm_df['pulse_index'], y_smooth,
+                   color='black', linewidth=0.4, alpha=0.4)
+    for _y in _grid_ys:
+        ax_tr.axhline(_y, color='grey', linewidth=0.35, alpha=0.3)
+    ax_tr.set_xlim(START_PULSE, START_PULSE + PULSE_LIMIT)
+    ax_tr.set_ylim(-1, 1)
+    ax_tr.set_title(phase_label, fontsize=7, loc='left', pad=2)
+    ax_tr.set_xlabel('# pulse', fontsize=6)
+    ax_tr.tick_params(labelsize=5)
+    ax_tr.spines['top'].set_visible(False)
+    ax_tr.spines['right'].set_visible(False)
+
+    # ── row 1: pulse-50 normalised amplitude histogram ───────────────────────────
+    ax_h50 = axes_sum[1, col_i]
+    vals50 = [v for rec in recs
+              if (v := _value_at_pulse(rec, _SUM_PULSE)) is not None and np.isfinite(v)]
+    if vals50:
+        weights        = [100.0 / len(vals50)] * len(vals50)
+        bar_heights, _ = np.histogram(vals50, bins=_hist_bins, weights=weights)
+        ax_h50.hist(vals50, bins=_hist_bins, weights=weights,
+                    color='#c8c8c8', edgecolor='black', linewidth=0.4, alpha=0.9)
+        ax_h50.axvline(0, color='black', linewidth=0.6, linestyle='--', alpha=0.4)
+        if len(vals50) > 1:
+            x_kde    = np.linspace(-1, 1, 300)
+            kde_vals = gaussian_kde(vals50)(x_kde)
+            max_bar  = bar_heights.max()
+            if kde_vals.max() > 0 and max_bar > 0:
+                kde_vals = kde_vals / kde_vals.max() * max_bar
+            ax_h50.plot(x_kde, kde_vals, color='black', linewidth=1.2)
+    ax_h50.set_xlim(-1, 1)
+    ax_h50.set_ylim(0, 70)
+    ax_h50.set_xlabel('(y − y₀) / y₀', fontsize=6)
+    ax_h50.tick_params(labelsize=5, length=2, pad=1)
+    ax_h50.spines['top'].set_visible(False)
+    ax_h50.spines['right'].set_visible(False)
+
+    vals50_by_phase[phase] = vals50
+
+    # ── rows 2–4: latency / speed / width histograms ──────────────────────────────
+    _lat_hist(axes_sum[2, col_i], ev_lat[phase],    '', x_max=7,   y_max=80, kde_lw=1.2)
+    _lat_hist(axes_sum[3, col_i], ev_speeds[phase], '', x_max=0.5, y_max=80, n_bins=30, kde_lw=1.2)
+    _lat_hist(axes_sum[4, col_i], ev_width[phase],  '', x_max=2.5, y_max=80, n_bins=30, kde_lw=1.2)
+    axes_sum[2, col_i].set_xlabel('latency (ms)', fontsize=6)
+    axes_sum[3, col_i].set_xlabel('velocity (m/s)', fontsize=6)
+    axes_sum[4, col_i].set_xlabel('width (ms)', fontsize=6)
+
+    # ── row 5: latency vs distance scatter (grey shades = frequency) ─────────────
+    ax_ld = axes_sum[5, col_i]
+    for rec in recs:
+        dist = EV_DIST_MM.get(rec['channel'])
+        if dist is None or not np.isfinite(dist):
+            continue
+        if 'latency_ms' not in rec['pulses'].columns:
+            continue
+        color  = _freq_grey_g[rec['freq_Hz']]
+        jitter = _freq_jitter_g[rec['freq_Hz']]
+        for lat in rec['pulses']['latency_ms'].dropna().values:
+            if np.isfinite(lat) and lat > 0:
+                ax_ld.scatter(dist + jitter, lat, color=color, s=4,
+                              alpha=0.7, linewidths=0, zorder=3)
+    ax_ld.set_xlim(0, 1.6)
+    ax_ld.set_ylim(0, 8)
+    ax_ld.set_xlabel('distance (mm)', fontsize=6)
+    ax_ld.tick_params(labelsize=5)
+    ax_ld.spines['top'].set_visible(False)
+    ax_ld.spines['right'].set_visible(False)
+
+# ── hide y ticks/labels for the 2nd and 3rd columns ───────────────────────────
+for row_i in range(_n_sum_rows):
+    for col_i in range(1, n_phases):
+        axes_sum[row_i, col_i].tick_params(labelleft=False)
+
+axes_sum[0, 0].set_ylabel('(y − y₀) / y₀', fontsize=7)
+axes_sum[1, 0].set_ylabel('%', fontsize=7)
+axes_sum[2, 0].set_ylabel('%', fontsize=7)
+axes_sum[3, 0].set_ylabel('%', fontsize=7)
+axes_sum[4, 0].set_ylabel('%', fontsize=7)
+axes_sum[5, 0].set_ylabel('latency (ms)', fontsize=7)
+
+_freq_handles_sum = [plt.Line2D([0], [0], marker='o', color='w',
+                                 markerfacecolor=_freq_grey_g[f], markersize=4,
+                                 label=f'{f:g} Hz')
+                     for f in _all_freqs_g]
+axes_sum[5, -1].legend(handles=_freq_handles_sum, fontsize=4, loc='upper right',
+                       framealpha=0.5, handlelength=0.8, labelspacing=0.2)
+
+plt.tight_layout(h_pad=0.3, w_pad=0.3)
+fig_sum.savefig(r'C:\Users\YHLab\Downloads\summary_glucose.png', dpi=300, bbox_inches='tight')
+plt.show()
+plt.close(fig_sum)
+
+# ── dataset used in the ex vivo summary figure ────────────────────────────────
+
+print('\nEX VIVO GLUCOSE SUMMARY FIGURE — dataset used')
+print(f'  Source CSVs    : {GLUCOSE_DIR}')
+print(f'  Retina source  : {SOURCE_DIR}')
+print(f'  Channels       : {sorted(ALLOWED_CHANNELS)}')
+print(f'  Stim electrode : {_EV_STIM}')
+
+for col_i, phase in enumerate(present_phases):
+    recs         = records_by_phase[phase]
+    phase_label  = _SUM_PHASE_LABELS[col_i] if col_i < len(_SUM_PHASE_LABELS) else str(col_i + 1)
+    chans        = sorted({r['channel'] for r in recs})
+    currents_uA  = sorted({r['current_uA'] for r in recs})
+    freqs_hz     = sorted({r['freq_Hz'] for r in recs})
+    files        = sorted({r['filename'] for r in recs})
+
+    print(f'\n  Phase: {phase}  ({phase_label})')
+    print(f'    n records   : {len(recs)}')
+    print(f'    channels    : {chans}')
+    print(f'    currents uA : {currents_uA}')
+    print(f'    freqs Hz    : {freqs_hz}')
+    print(f'    n files     : {len(files)}')
+    for fname in files:
+        print(f'      - {fname}')
+
+# ── per-phase stats for every row of the ex vivo summary figure ──────────────
+
+_sum_table_rows: list[tuple[str, list[float]]] = []
+_dist_table_rows: list[tuple[str, list[float]]] = []
+
+for col_i, phase in enumerate(present_phases):
+    phase_label = _SUM_PHASE_LABELS[col_i] if col_i < len(_SUM_PHASE_LABELS) else str(col_i + 1)
+    recs = records_by_phase[phase]
+
+    _sum_table_rows.append((f'{phase_label} · norm amp @ pulse {_SUM_PULSE}', vals50_by_phase[phase]))
+    _sum_table_rows.append((f'{phase_label} · latency (ms)',                  ev_lat[phase]))
+    _sum_table_rows.append((f'{phase_label} · speed (m/s)',                   ev_speeds[phase]))
+    _sum_table_rows.append((f'{phase_label} · width (ms)',                    ev_width[phase]))
+
+    for ch in sorted({r['channel'] for r in recs}):
+        dist = EV_DIST_MM.get(ch)
+        lat_vals = []
+        for r in recs:
+            if r['channel'] != ch or 'latency_ms' not in r['pulses'].columns:
+                continue
+            lat_vals.extend(v for v in r['pulses']['latency_ms'].dropna().values
+                             if np.isfinite(v) and v > 0)
+        dist_str = f'{dist:.2f}mm' if dist is not None and np.isfinite(dist) else 'n/a'
+        _dist_table_rows.append((f'{phase_label} · {ch} (d={dist_str})', lat_vals))
+
+_print_stats_table(_sum_table_rows,
+                    'EX VIVO GLUCOSE SUMMARY FIGURE — rows 1-4 (pulse-50 amp / latency / speed / width)')
+_print_stats_table(_dist_table_rows,
+                    'EX VIVO GLUCOSE SUMMARY FIGURE — row 5 (latency vs distance, per channel)')
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SUMMARY FIGURE: intact glucose — one column per phase (Normal / Low / Normal)
+# ════════════════════════════════════════════════════════════════════════════════
+
+if _has_intact_lat:
+    in_width = _collect_vals(intact_by_phase, intact_present, 'width_ms')
+
+    fig_sum_in, axes_sum_in = plt.subplots(_n_sum_rows, n_intact,
+                                            figsize=(1.6 * n_intact, 1.3 * _n_sum_rows),
+                                            sharey='row')
+    if n_intact == 1:
+        axes_sum_in = axes_sum_in.reshape(-1, 1)
+
+    for col_i, phase in enumerate(intact_present):
+        recs = intact_by_phase[phase]
+        phase_label = _INTACT_PHASE_LABELS[col_i] if col_i < len(_INTACT_PHASE_LABELS) else str(col_i + 1)
+
+        # ── row 0: normalised traces vs # pulse ──────────────────────────────────
+        ax_tr = axes_sum_in[0, col_i]
+        for rec in recs:
+            norm_df = _normalise(rec)
+            if norm_df is None:
+                continue
+            y_smooth = (norm_df['norm_amp']
+                        .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+                        .mean())
+            ax_tr.plot(norm_df['pulse_index'], y_smooth,
+                       color='black', linewidth=0.4, alpha=0.4)
+        for _y in _grid_ys:
+            ax_tr.axhline(_y, color='grey', linewidth=0.35, alpha=0.3)
+        ax_tr.set_xlim(START_PULSE, START_PULSE + PULSE_LIMIT)
+        ax_tr.set_ylim(-1, 1)
+        ax_tr.set_title(phase_label, fontsize=7, loc='left', pad=2)
+        ax_tr.set_xlabel('# pulse', fontsize=6)
+        ax_tr.tick_params(labelsize=5)
+        ax_tr.spines['top'].set_visible(False)
+        ax_tr.spines['right'].set_visible(False)
+
+        # ── row 1: pulse-50 normalised amplitude histogram ───────────────────────
+        ax_h50 = axes_sum_in[1, col_i]
+        vals50 = [v for rec in recs
+                  if (v := _value_at_pulse(rec, _SUM_PULSE)) is not None and np.isfinite(v)]
+        if vals50:
+            weights        = [100.0 / len(vals50)] * len(vals50)
+            bar_heights, _ = np.histogram(vals50, bins=_hist_bins, weights=weights)
+            ax_h50.hist(vals50, bins=_hist_bins, weights=weights,
+                        color='#a8c8e8', edgecolor='black', linewidth=0.4, alpha=0.9)
+            ax_h50.axvline(0, color='black', linewidth=0.6, linestyle='--', alpha=0.4)
+            if len(vals50) > 1:
+                x_kde    = np.linspace(-1, 1, 300)
+                kde_vals = gaussian_kde(vals50)(x_kde)
+                max_bar  = bar_heights.max()
+                if kde_vals.max() > 0 and max_bar > 0:
+                    kde_vals = kde_vals / kde_vals.max() * max_bar
+                ax_h50.plot(x_kde, kde_vals, color='black', linewidth=1.2)
+        ax_h50.set_xlim(-1, 1)
+        ax_h50.set_xlabel('(y − y₀) / y₀', fontsize=6)
+        ax_h50.tick_params(labelsize=5, length=2, pad=1)
+        ax_h50.spines['top'].set_visible(False)
+        ax_h50.spines['right'].set_visible(False)
+
+        # ── rows 2–4: latency / velocity / width histograms ──────────────────────
+        _lat_hist(axes_sum_in[2, col_i], in_lat[phase],    '', color='#a8c8e8', x_max=7,   y_max=80, kde_lw=1.2)
+        _lat_hist(axes_sum_in[3, col_i], in_speeds[phase], '', color='#a8c8e8', x_max=1.0, y_max=80, n_bins=30, kde_lw=1.2)
+        _lat_hist(axes_sum_in[4, col_i], in_width[phase],  '', color='#a8c8e8', x_max=5,   y_max=80, n_bins=30, kde_lw=1.2)
+        axes_sum_in[2, col_i].set_xlabel('latency (ms)', fontsize=6)
+        axes_sum_in[3, col_i].set_xlabel('velocity (m/s)', fontsize=6)
+        axes_sum_in[4, col_i].set_xlabel('width (ms)', fontsize=6)
+
+        # ── row 5: latency vs distance scatter (grey shades = frequency) ─────────
+        ax_ld = axes_sum_in[5, col_i]
+        for rec in recs:
+            dist = IN_DIST_MM.get(rec['channel'])
+            if dist is None or not np.isfinite(dist):
+                continue
+            if 'latency_ms' not in rec['pulses'].columns:
+                continue
+            color  = _freq_grey_g[rec['freq_Hz']]
+            jitter = _freq_jitter_g[rec['freq_Hz']]
+            for lat in rec['pulses']['latency_ms'].dropna().values:
+                if np.isfinite(lat) and lat > 0:
+                    ax_ld.scatter(dist + jitter, lat, color=color, s=4,
+                                  alpha=0.7, linewidths=0, zorder=3)
+        ax_ld.set_xlim(_xlim_lat_g)
+        ax_ld.set_ylim(_ylim_lat_g)
+        ax_ld.set_xlabel('distance (mm)', fontsize=6)
+        ax_ld.tick_params(labelsize=5)
+        ax_ld.spines['top'].set_visible(False)
+        ax_ld.spines['right'].set_visible(False)
+
+    # ── hide y ticks/labels for the 2nd and 3rd columns ───────────────────────
+    for row_i in range(_n_sum_rows):
+        for col_i in range(1, n_intact):
+            axes_sum_in[row_i, col_i].tick_params(labelleft=False)
+
+    axes_sum_in[0, 0].set_ylabel('(y − y₀) / y₀', fontsize=7)
+    axes_sum_in[1, 0].set_ylabel('%', fontsize=7)
+    axes_sum_in[2, 0].set_ylabel('%', fontsize=7)
+    axes_sum_in[3, 0].set_ylabel('%', fontsize=7)
+    axes_sum_in[4, 0].set_ylabel('%', fontsize=7)
+    axes_sum_in[5, 0].set_ylabel('latency (ms)', fontsize=7)
+
+    axes_sum_in[5, -1].legend(handles=_freq_handles_sum, fontsize=4, loc='upper right',
+                              framealpha=0.5, handlelength=0.8, labelspacing=0.2)
+
+    plt.tight_layout(h_pad=0.3, w_pad=0.3)
+    plt.show()
+    plt.close(fig_sum_in)

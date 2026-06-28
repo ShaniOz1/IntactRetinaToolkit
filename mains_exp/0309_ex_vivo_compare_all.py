@@ -500,6 +500,55 @@ if __name__ == '__main__':
     _xmax        = np.percentile(_all_norm, 99)
     _shared_bins = np.linspace(_xmin, _xmax, 30)
 
+    # ── Table for Figure 2 ────────────────────────────────────────────────────
+    print('\n' + '=' * 60)
+    print('Figure 2 — Table summary')
+    print('=' * 60)
+
+    # Row 0: amplitude / width / velocity per device
+    row0_rows = []
+    for spd_df, label, _, dist_mm in [
+        (mea_speed_dr,   f'MEA: {EDF_STIM_ELECTRODE_2}→{EDF_SPEED_RECORD_CH}',   _mea_grey,   MEA_DISTANCE_MM),
+        (probe_speed_dr, f'Probe: Ch27→Ch{PROBE_SPEED_RECORD_CH}', _probe_grey, PROBE_DISTANCE_MM),
+    ]:
+        row = {'dataset': label}
+        for col, xlabel, use_abs, derived in speed_metrics:
+            if spd_df is None or spd_df.empty or col not in spd_df.columns:
+                row[xlabel + ' mean']   = float('nan')
+                row[xlabel + ' std']    = float('nan')
+                row[xlabel + ' median'] = float('nan')
+                row[xlabel + ' n']      = 0
+                continue
+            vals = spd_df[col].dropna().values
+            if use_abs:
+                vals = np.abs(vals)
+            if derived == 'speed':
+                vals = dist_mm / vals
+            vals = vals[vals > 0]
+            row[xlabel + ' mean']   = float(np.mean(vals))   if len(vals) else float('nan')
+            row[xlabel + ' std']    = float(np.std(vals))    if len(vals) else float('nan')
+            row[xlabel + ' median'] = float(np.median(vals)) if len(vals) else float('nan')
+            row[xlabel + ' n']      = len(vals)
+        row0_rows.append(row)
+
+    row0_df = pd.DataFrame(row0_rows).set_index('dataset')
+    print('\nRow 0 — amplitude | width | velocity (mean ± std, median, n):')
+    print(row0_df.to_string(float_format=lambda v: f'{v:.3f}'))
+
+    # Row 1: normalized amplitude statistics per frequency
+    print('\nRow 1 — normalized amplitude (y−y₀)/y₀ across 100 pulses, Ch0:')
+    row1_rows = []
+    for lbl, norm_arr in _norm_arrays.items():
+        row1_rows.append({
+            'frequency': lbl,
+            'mean Δ':    float(np.mean(norm_arr)),
+            'std Δ':     float(np.std(norm_arr)),
+            'median Δ':  float(np.median(norm_arr)),
+            'final Δ':   float(norm_arr[-1]) if len(norm_arr) else float('nan'),
+        })
+    print(pd.DataFrame(row1_rows).set_index('frequency').to_string(float_format=lambda v: f'{v:.3f}'))
+    print('=' * 60 + '\n')
+
     gs_bot    = gridspec.GridSpecFromSubplotSpec(3, 2, subplot_spec=outer_gs[1],
                                                  wspace=0.35, hspace=0.15)
     ax_norm   = fig_combined.add_subplot(gs_bot[:, 1])

@@ -69,6 +69,13 @@ EX_VIVO_RETINA_CHANNELS: dict[str, set[str]] = {
     '2025.11.12':    {'K9', 'D11'},
 }
 
+# EX_VIVO_RETINA_CHANNELS: dict[str, set[str]] = {
+#     '2024.11.17':    {'F1', 'F2', 'G1', 'G4', 'G5', 'G7', 'G8', 'H10', 'H11', 'H12'},
+#     '2025.11.02 J6': {'F10', 'F11', 'G10', 'G9', 'H8', 'K3', 'K4', 'K5', 'L3'},
+#     '2025.11.02 J9': {'A9', 'B9', 'C9', 'E9', 'F9', 'G9', 'L9'},
+#     '2025.11.12':    {'C11', 'D11', 'H10', 'J10', 'J9', 'K9', 'L9'},
+# }
+
 
 # ── intact channel selection ──────────────────────────────────────────────────
 # Keys: (retina_prefix, date_str)  e.g. ('Retina1', '250525')
@@ -323,7 +330,7 @@ print()
 
 def _pivot_table(records: list[dict], title: str) -> None:
     """
-    Print a pivot table: rows = retina, columns = (current_uA, freq_Hz),
+    Print a pivot table: rows = (current_uA, freq_Hz), columns = retina,
     cell value = number of unique channels loaded.
     """
     if not records:
@@ -341,11 +348,11 @@ def _pivot_table(records: list[dict], title: str) -> None:
                 .nunique()
                 .reset_index(name='n_channels'))
 
-    # Build column labels: "7µA / 1Hz" style, sorted by (current, freq)
-    col_keys = sorted(counts[['current_uA', 'freq_Hz']]
+    # Build row labels: "7µA / 1Hz" style, sorted by (current, freq)
+    row_keys = sorted(counts[['current_uA', 'freq_Hz']]
                       .drop_duplicates()
                       .itertuples(index=False, name=None))
-    col_labels = {(c, f): f'{c:g}µA / {f:g}Hz' for c, f in col_keys}
+    row_labels = {(c, f): f'{c:g}µA / {f:g}Hz' for c, f in row_keys}
 
     retinas = sorted(counts['retina'].unique())
 
@@ -353,25 +360,26 @@ def _pivot_table(records: list[dict], title: str) -> None:
     pivot: dict[str, dict[str, str]] = {}
     for _, row in counts.iterrows():
         key = (row['current_uA'], row['freq_Hz'])
-        pivot.setdefault(row['retina'], {})[col_labels[key]] = str(int(row['n_channels']))
+        pivot.setdefault(row_labels[key], {})[row['retina']] = str(int(row['n_channels']))
 
     # Column widths
-    ret_w   = max(len('Retina'), max(len(r) for r in retinas))
-    col_ws  = {lbl: max(len(lbl), 1) for lbl in col_labels.values()}
+    cond_w  = max(len('Condition'), max(len(lbl) for lbl in row_labels.values()))
+    col_ws  = {ret: max(len(ret), 1) for ret in retinas}
 
     # Header
-    header = f'  {"Retina":<{ret_w}}' + ''.join(f'  {lbl:>{col_ws[lbl]}}' for lbl in col_labels.values())
+    header = f'  {"Condition":<{cond_w}}' + ''.join(f'  {ret:>{col_ws[ret]}}' for ret in retinas)
     sep    = '  ' + '─' * (len(header) - 2)
 
     print(f'\n{title}  (total records: {len(records)})')
     print(sep)
     print(header)
     print(sep)
-    for retina in retinas:
-        row_str = f'  {retina:<{ret_w}}'
-        for lbl in col_labels.values():
-            val = pivot.get(retina, {}).get(lbl, '–')
-            row_str += f'  {val:>{col_ws[lbl]}}'
+    for key in row_keys:
+        lbl = row_labels[key]
+        row_str = f'  {lbl:<{cond_w}}'
+        for ret in retinas:
+            val = pivot.get(lbl, {}).get(ret, '–')
+            row_str += f'  {val:>{col_ws[ret]}}'
         print(row_str)
     print(sep)
 
@@ -384,7 +392,11 @@ print()
 
 def _has_full_window(rec: dict) -> bool:
     """Return True only if the record contains pulses reaching the end of the window."""
-    return int(rec['pulses']['pulse_index'].max()) >= START_PULSE + PULSE_LIMIT - 1
+    pulses = rec['pulses']
+    if pulses.empty:
+        return False
+    mx = pulses['pulse_index'].max()
+    return pd.notna(mx) and int(mx) >= START_PULSE + PULSE_LIMIT - 1
 
 
 def _normalise(rec: dict) -> Optional[pd.DataFrame]:
@@ -488,12 +500,31 @@ def _value_at_pulse_relaxed(rec: dict, pulse_idx: int) -> Optional[float]:
     return float(row['norm_amp'].iloc[0])
 
 
+def _print_stats_table(rows: list[tuple[str, list[float]]], title: str) -> None:
+    """Print a table of n / mean / median / std for each (label, vals) row."""
+    print(f'\n{title}')
+    header = f'  {"":<30}{"n":>6}{"mean":>10}{"median":>10}{"std":>10}'
+    sep    = '  ' + '-' * (len(header) - 2)
+    print(sep)
+    print(header)
+    print(sep)
+    for label, vals in rows:
+        if vals:
+            arr = np.array(vals)
+            print(f'  {label:<30}{len(arr):>6}{arr.mean():>10.3f}{np.median(arr):>10.3f}{arr.std():>10.3f}')
+        else:
+            print(f'  {label:<30}{0:>6}{"-":>10}{"-":>10}{"-":>10}')
+    print(sep)
+
+
 n_hist_rows = len(HIST_PULSES)
 _hist_bins  = np.linspace(-1, 1, 11)   # 10 equal bins of width 0.2, shared across all subplots
 
 fig_hist, axes_hist = plt.subplots(n_hist_rows, 2,
                                    figsize=(6, 1.6 * n_hist_rows),
                                    sharex=True, sharey=True)
+
+_hist_table_rows: list[tuple[str, list[float]]] = []
 
 for row_i, pulse_idx in enumerate(HIST_PULSES):
     for col_i, (h_records, title) in enumerate([
@@ -504,6 +535,7 @@ for row_i, pulse_idx in enumerate(HIST_PULSES):
         vals = [v for rec in h_records
                 if (v := _value_at_pulse(rec, pulse_idx)) is not None
                 and np.isfinite(v)]
+        _hist_table_rows.append((f'{title} · pulse {pulse_idx}', vals))
 
         if vals:
             weights = [100.0 / len(vals)] * len(vals)
@@ -537,6 +569,8 @@ for col_i in range(2):
 plt.tight_layout(h_pad=0.5, w_pad=0.5)
 plt.show()
 plt.close(fig_hist)
+
+_print_stats_table(_hist_table_rows, 'NORMALISED AMPLITUDE AT HIST_PULSES (figure 2)')
 
 
 # ── histograms: absolute amplitude (mV) at each pulse in HIST_PULSES ──────────
@@ -657,10 +691,13 @@ fig_dist, axes_dist = plt.subplots(2, len(_metrics),
                                     figsize=(2.5 * len(_metrics), 5),
                                     sharey=False)
 
+_dist_table_rows: list[tuple[str, list[float]]] = []
+
 for row_i, (src_records, src_label, is_ev) in enumerate(_sources):
     for col_i, (col, xlabel, x_max) in enumerate(_metrics):
         ax = axes_dist[row_i, col_i]
         vals = _speed_vals(src_records, is_ev) if col == 'speed' else _col_vals(src_records, col)
+        _dist_table_rows.append((f'{src_label} · {xlabel}', vals))
         _draw_hist(ax, vals, xlabel, x_max)
         if row_i == 0:
             ax.set_xlabel('')
@@ -670,6 +707,80 @@ for row_i, (src_records, src_label, is_ev) in enumerate(_sources):
 plt.tight_layout()
 plt.show()
 plt.close(fig_dist)
+
+_print_stats_table(_dist_table_rows, 'LATENCY / SPEED / AMPLITUDE / WIDTH DISTRIBUTIONS (figure 4)')
+
+
+# ── figure 4 duplicate: 7uA sessions highlighted in light purple ────────────
+
+def _speed_vals_split(records, is_ev):
+    vals_other, vals_7uA = [], []
+    for r in records:
+        ch   = r['channel']
+        stim = r.get('stim_electrode') if is_ev else r.get('stim_ch')
+        dist = _ev_distance_mm(stim, ch) if is_ev else _intact_dist_mm(stim, ch)
+        if dist is None or not np.isfinite(dist):
+            continue
+        if 'latency_ms' not in r['pulses'].columns:
+            continue
+        target = vals_7uA if r.get('current_uA') == 7.0 else vals_other
+        for lat in r['pulses']['latency_ms'].dropna().values:
+            if np.isfinite(lat) and lat > 0:
+                target.append(dist / lat)   # mm/ms = m/s
+    return ([v for v in vals_other if np.isfinite(v) and v > 0],
+            [v for v in vals_7uA if np.isfinite(v) and v > 0])
+
+
+def _col_vals_split(records, col):
+    vals_other, vals_7uA = [], []
+    for r in records:
+        if col not in r['pulses'].columns:
+            continue
+        target = vals_7uA if r.get('current_uA') == 7.0 else vals_other
+        target.extend(r['pulses'][col].dropna().values.tolist())
+    return ([v for v in vals_other if np.isfinite(v) and v > 0],
+            [v for v in vals_7uA if np.isfinite(v) and v > 0])
+
+
+def _draw_hist_split(ax, vals_other, vals_7uA, xlabel, x_max):
+    n_total = len(vals_other) + len(vals_7uA)
+    if n_total:
+        bins = np.linspace(0, x_max, 40)
+        weights_other = [100.0 / n_total] * len(vals_other)
+        weights_7uA   = [100.0 / n_total] * len(vals_7uA)
+        ax.hist([vals_other, vals_7uA], bins=bins, weights=[weights_other, weights_7uA],
+                stacked=True, color=['#c8c8c8', 'plum'],
+                edgecolor='black', linewidth=0.4, alpha=0.9)
+    ax.set_xlim(0, x_max)
+    ax.set_xlabel(xlabel, fontsize=7)
+    ax.tick_params(labelsize=6)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+
+fig_dist2, axes_dist2 = plt.subplots(2, len(_metrics),
+                                      figsize=(2.5 * len(_metrics), 5),
+                                      sharey=False)
+
+for row_i, (src_records, src_label, is_ev) in enumerate(_sources):
+    for col_i, (col, xlabel, x_max) in enumerate(_metrics):
+        ax = axes_dist2[row_i, col_i]
+        vals_other, vals_7uA = (_speed_vals_split(src_records, is_ev) if col == 'speed'
+                                 else _col_vals_split(src_records, col))
+        _draw_hist_split(ax, vals_other, vals_7uA, xlabel, x_max)
+        if row_i == 0:
+            ax.set_xlabel('')
+            ax.tick_params(labelbottom=False)
+    axes_dist2[row_i, 0].set_ylabel(f'{src_label}\n[%]', fontsize=7)
+
+from matplotlib.patches import Patch
+fig_dist2.legend(handles=[Patch(facecolor='#c8c8c8', edgecolor='black', label='other currents'),
+                           Patch(facecolor='plum', edgecolor='black', label='7µA')],
+                  loc='upper right', fontsize=7, frameon=False)
+
+plt.tight_layout()
+plt.show()
+plt.close(fig_dist2)
 
 
 # ── distance distribution ─────────────────────────────────────────────────────

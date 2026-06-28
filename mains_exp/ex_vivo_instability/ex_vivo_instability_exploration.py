@@ -70,7 +70,7 @@ FILES = [
     # # ── Group 12 · 2025.11.12 Retina1 Phase1-Normal · G10 ──────────────────
     # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-19-197uA_300us_60us_1Hz_100pulse_B-00071.edf',  'G10'),
     # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-22-347uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
-    (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-25-147uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
+    # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-25-147uA_300us_60us_20Hz_100pulse_B-00071.edf', 'G10'),
     # (r'C:\Shani\MEA mini1200\2025.11.12 e14_Shani\Retina1\Phase1 - Normal\2025-11-12T11-26-217uA_300us_60us_50Hz_100pulse_B-00071.edf', 'G10'),
 
 
